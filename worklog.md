@@ -489,3 +489,36 @@ Files created:
 5. **Real video frame thumbnails** — server-side ffmpeg/HLS-first-segment extraction for posters
 6. **iOS install instructions** — Add Safari-specific "Add to Home Screen" banner
 7. **Drag & drop enhancement** — visual file drop zone for .url/.webloc files
+
+---
+Task ID: github-upload
+Agent: main (Z.ai Code)
+Task: Upload the Video Downloader project to the user's GitHub repo (huvantiofficial-code/Video-Downloader-App) and make it Vercel-deployment ready with no errors.
+
+Work Log:
+- Audited project for Vercel compatibility: identified (1) curl binary dependency in curl-fetch.ts / curl-stream.ts (unavailable on Vercel serverless), (2) SQLite writes on read-only FS, (3) build script with `cp` commands, (4) `output: standalone` + invalid `eslint` config key for Next.js 16, (5) junk in existing git history (.env, db/custom.db, QA screenshots, Caddyfile, .zscripts).
+- Created `src/lib/curl-available.ts` — runtime curl detection (cached) + isVercel flag.
+- Added native `fetch` fallback to `curl-fetch.ts` (curlFetch) and `curl-stream.ts` (curlStream via curlStreamViaCurl + fetchStreamFallback). App stays fully functional on Vercel (loses Cloudflare bypass but works for non-protected hosts).
+- Made `src/lib/db.ts` Vercel-aware: auto-sets DATABASE_URL=file:/tmp/reel.db on Vercel, plus `ensureSchema()` bootstrap (CREATE TABLE IF NOT EXISTS mirroring Prisma DDL) so ephemeral history works without `prisma db push`.
+- Wired `ensureSchema()` into history GET/POST routes.
+- Fixed `next.config.ts`: removed `output: standalone` and the invalid `eslint` key (Next.js 16 removed it — was logging "Unrecognized key" warning).
+- Fixed `package.json`: build → `next build` (removed broken `cp` commands), start → `next start`, added `postinstall: prisma generate`, renamed package to video-downloader-app v2.3.0.
+- Wrote comprehensive `.gitignore` excluding node_modules, .next, .env, db/*.db, download/, upload/, mini-services/, examples/, tests/, agent-ctx/, tool-results/, .zscripts/, Caddyfile, logs, tsbuildinfo.
+- Created `.env.example` and a detailed `README.md` (features, tech stack, local dev, Vercel deploy notes).
+- Ran `bun run lint` → 0 errors / 0 warnings.
+- Reinitialized git (fresh clean history; old history was sandbox auto-commits with UUID messages + junk). Committed 117 files (all source/config/assets, no junk). Pushed to https://github.com/huvantiofficial-code/Video-Downloader-App.git (main branch, commit 682b04d). Verified remote HEAD matches local.
+- Browser QA via agent-browser: page renders (title "Reel — Video Fetch & Download"), all UI elements present (header, heading, URL input, Fetch button, quick-start examples, history toggle, theme toggle), zero console/page errors, clicks responsive.
+- API QA via curl: GET /api/history → 200 with valid JSON + real extracted data (5 HLS qualities + MP4 + graceful error for example.com). POST /api/extract → 200, found MP4 source in 133ms. Confirms curl/fetch fallback + DB layer work.
+- NOTE on OOM: the 4.1GB / no-swap sandbox OOM-kills next-server when Chromium (agent-browser) or heavy extract runs alongside the dev server. This is an environmental limit, NOT a code defect — irrelevant on Vercel (isolated serverless memory). App verified functional via API tests + browser render.
+- Pushed the next.config.ts eslint-key fix as a follow-up commit.
+
+Stage Summary:
+- GitHub repo live: https://github.com/huvantiofficial-code/Video-Downloader-App (main, clean 2-commit history, 117 files, no junk).
+- Vercel-ready: build = `next build`, postinstall = `prisma generate`, no env vars required to deploy, curl→fetch fallback, SQLite→/tmp ephemeral with graceful degradation, no invalid config keys.
+- App verified: lint clean, compiles, renders in browser with no errors, history API + extract API return correct results.
+- For persistent history on Vercel, user should set DATABASE_URL to a hosted DB (Turso libSQL recommended) — documented in README + .env.example.
+
+Unresolved / Risks:
+- Cloudflare-protected hosts won't be reachable on Vercel (no curl TLS fingerprint) — falls back to native fetch which most CDNs reject. Non-protected sites work fine. This is a fundamental serverless limitation, documented.
+- SQLite history on Vercel is ephemeral (/tmp, per-instance, lost on cold start). Documented; user can add Turso for persistence.
+- Recommended next: configure a Turso libSQL DATABASE_URL on Vercel for persistent shared history.
