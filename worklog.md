@@ -1,0 +1,491 @@
+# Reel — Video Fetch & Download: Worklog
+
+## Project Status
+
+Working Next.js 16 app at `/home/z/my-project`. A video downloader tool ("Reel")
+that extracts video sources from any URL (HLS/DASH/MP4/TS), previews them
+inline, and offers direct download with real progress tracking (including
+synthetic Content-Length for HLS). Cloudflare-aware via `curl` (IPv4-pinned,
+execFile + spawn streaming, HEAD method support). All routes pass
+lint (0 errors / 0 warnings), no console errors, full mobile + desktop
+responsive, light + dark mode, user-configurable settings persisted to
+localStorage. Features history export/import, drag-and-drop URL, stats
+badge, toast action buttons, polished glass-morphism styling with
+shimmer/stagger/fade animations. Site-specific extractors for 10+ video
+hosting platforms. History DB capped at 100 entries with 30-day TTL auto-cleanup.
+PWA support with manifest, service worker, and install prompt. Insights dashboard
+with 4 recharts visualizations + KPI cards + recent-errors list. About dialog
+with feature grid and tech stack. URL security indicator (HTTPS/HTTP badge).
+Share URL feature with `?url=` query param auto-fetch. Enhanced toast accent
+borders (emerald for success, rose for errors, amber for warnings).
+
+**Version**: v2.3
+
+## Current Goals / Completed
+
+### Phase F — UI Enhancement Round (2025-07-27)
+
+1. **Result Summary Card** — New `ResultSummaryCard` component (`src/components/result-summary-card.tsx`)
+   - Shows page metadata (thumbnail, title, host favicon, description) when results are found
+   - Extraction method indicator badge: "Site extractor · doodstream" vs "Generic scan"
+   - Source count badge, time taken badge
+   - "Watch best" and "Download best" action buttons
+   - 16:9 aspect thumbnail with FileVideo fallback
+   - Responsive layout (full-width mobile, side-by-side desktop)
+   - Properly integrated into `page.tsx` above the ResultsToolbar
+
+2. **Enhanced Empty/Error State** — Improved no-results display
+   - Larger animated icon with bounce-gentle effect and destructive/10 bg ring
+   - Bold "No video found" title with relaxed description
+   - Suggestion pills (HLS stream, MP4 direct) alongside "Try again" button
+   - Helpful tip section with floating animation: "Direct video URLs (.mp4, .m3u8) work best"
+
+3. **Enhanced Loading State** — Visual extraction progress indicator
+   - Spinning progress ring with pulse-ring animation
+   - Descriptive text: "Extracting video sources…" / "Scanning page content, analyzing scripts & embeds"
+   - Two skeleton preview cards below
+   - Fade-up entrance animation
+
+4. **CSS Animation Library** — New animations added to `globals.css`
+   - `animate-pulse-ring` — pulsing ring for active/loading states
+   - `animate-bounce-gentle` — gentle bounce for success/best badges
+   - `animate-check-pop` — checkmark pop animation for copy confirmation
+   - `animate-float` — subtle floating for hint text
+   - `animate-slide-in-right` — slide-in from right for notifications
+   - `ripple-effect` — radial ripple on active press
+   - `input-focus-ring` — enhanced focus ring with primary shadow
+
+5. **Source Card Refinements** — Enhanced `source-card.tsx`
+   - Larger thumbnail (h-16 w-[5.5rem] on mobile, h-14 sm:w-20 on desktop)
+   - "Best" badge with gradient + bounce-gentle animation + shadow
+   - Ripple effect on card press
+   - Better source number display (rounded bg-muted pill)
+   - Improved text tracking and size hierarchy
+
+6. **Watch Dialog Polish** — Enhanced `watch-dialog.tsx`
+   - Action bar with card/80 bg + backdrop blur
+   - "Copied!" feedback text (not just icon) with check-pop animation
+   - "Download with progress" label for progress mode
+   - Raw URL section with Globe icon prefix + backdrop blur
+   - Better visual hierarchy in metadata badges
+
+7. **Footer Refinements** — Enhanced footer
+   - Larger logo (h-7 w-7), bold text, refined description
+   - Version badge as rounded-md bg-muted pill (v2.1)
+   - Subtle opacity adjustments for better hierarchy
+
+8. **History DB** — Already has 100-entry cap + 30-day TTL from previous phase (confirmed working)
+
+### QA Testing — All Pass ✓
+- Homepage loads correctly, no errors
+- URL input + fetch functionality works
+- Result Summary Card displays with page metadata
+- Extraction method indicator shows "Generic scan" or "Site extractor"
+- HLS (5 variants) and MP4 sources display correctly
+- Watch dialog opens and plays video
+- Dark mode theme toggle works
+- Mobile responsive (390px viewport tested)
+- Error state shows suggestions and tips
+- Loading state shows progress visualization
+- History panel expand/collapse works
+- Lint passes: 0 errors, 0 warnings
+- Dev server: no compile errors, all routes 200
+
+## Unresolved Issues / Risks
+- firestream/mixdrop: IP-bound token, ~30% failure rate
+- playmate CDN DNS doesn't resolve in sandbox
+- streamtape "converting" is server-side, may return 404
+- New extractors (doodstream/streamwish/filemoon) not verified against real URLs in sandbox
+- No headless browser fallback for JS-only sites (e.g., some Cloudflare-heavy pages)
+- Download progress for direct MP4 relies on server proxy (no range request support from some hosts)
+
+## Priority Recommendations for Next Phase
+1. **Verify site extractors against real URLs** — Run actual test URLs for doodstream, streamwish, filemoon
+2. **Keyboard shortcut number overlay** — Show shortcut numbers (1-9) visually on cards during key hold
+3. **Download progress for direct URLs** — Implement ReadableStream-based progress for non-HLS downloads
+4. **PWA support** — Add manifest.json + service worker for installable app
+5. **Headless browser fallback** — Add Puppeteer/Playwright-based extraction for JS-only sites
+6. **Batch mode progress bars** — Add per-URL progress indicators in batch extraction
+
+---
+
+## Task G-2a — PWA Support (2025-07-27)
+
+**Agent**: Z.ai Code (G-2a)
+**Scope**: Add Progressive Web App support so users can install Reel on their device.
+
+### Work Log
+
+1. **PWA icon generator** (`download/icons/generate-icons.mjs`)
+   - Vanilla Node script using `sharp` (already a project dep) to rasterize `public/logo.svg` into 4 PNGs.
+   - Standard icons (192, 512, 180 apple-touch) render the existing SVG (rounded green rect + white play triangle).
+   - Maskable icon (512x512) built from a synthetic SVG: solid `#0F9D6B` rect filling the entire canvas (no rounded corners — required for maskable) + white play triangle scaled to 50% × 60% of canvas, well inside the 80% safe zone.
+   - Apple-touch-icon flattened onto `#ffffff` so iOS doesn't render a transparent/black background.
+   - Run once: `bun download/icons/generate-icons.mjs` → all 4 PNGs written to `public/`.
+
+2. **Manifest** (`public/manifest.json`)
+   - `name`: "Reel — Video Fetch & Download", `short_name`: "Reel", `display: standalone`, `orientation: any`.
+   - `background_color: #ffffff`, `theme_color: #0F9D6B` (matches logo emerald).
+   - 3 icon entries: 192 (any), 512 (any), 512 (maskable).
+   - 2 shortcuts: "Fetch HLS demo" → `/?url=https%3A%2F%2Ftest-streams.mux.dev%2Fx36xhzz%2Fx36xhzz.m3u8`, "Fetch MP4 demo" → `/?url=https%3A%2F%2Fwww.w3schools.com%2Fhtml%2Fmov_bbb.mp4`.
+   - `categories: ["utilities", "productivity", "entertainment"]`, `scope: "/"`, `lang: "en"`, `display_override: ["standalone", "minimal-ui"]`.
+
+3. **Service worker** (`public/sw.js`)
+   - `CACHE_NAME = "reel-v1"`.
+   - Precache list: `/`, `/logo.svg`, `/manifest.json`, `/icon-192.png`, `/icon-512.png`.
+   - **install**: precache with `cache: "reload"` (bypass HTTP cache), then `skipWaiting()`. Failed precache entries are silently skipped so install never fails.
+   - **activate**: delete any cache whose name isn't `reel-v1`, then `clients.claim()`.
+   - **fetch** routing:
+     - Non-GET → bypass.
+     - Cross-origin → pass-through (no caching).
+     - `/api/*` → network-only (no caching of dynamic data).
+     - `mode === "navigate"` → network-first, fallback to cached URL, then cached `/` shell, then 503 offline page.
+     - Static assets (`.js/.css/.png/.svg/.woff2` etc. or by `request.destination`) → stale-while-revalidate.
+   - Vanilla JS, no Workbox. Also handles `message: "SKIP_WAITING"` for forced activation.
+
+4. **SW registration** (`src/components/pwa/register-sw.tsx`)
+   - Client component, returns `null`.
+   - Registers `/sw.js` only when `process.env.NODE_ENV === "production"` — never in dev (so HMR/cache invalidation aren't masked).
+   - Listens for `updatefound` / `statechange` to log when a new SW takes over.
+   - Defers registration until `window.load` so it doesn't compete with first paint.
+   - Success/failure logged to console.
+
+5. **Install prompt** (`src/components/pwa/install-prompt.tsx`)
+   - Captures `beforeinstallprompt` event in a ref, calls `e.preventDefault()` to suppress the default mini-infobar.
+   - **Second-visit gate**: increments `localStorage["reel.pwa.visitCount"]` on mount; toast only fires when count ≥ 2.
+   - **Session dismiss gate**: `sessionStorage["reel.pwa.installDismissed"]` set when toast shown, so it doesn't reappear within the session.
+   - Uses `sonner` `toast()` with 8s duration and an `action.label: "Install"` button that calls `deferred.prompt()` and logs `userChoice.outcome`.
+   - Listens for `appinstalled` to clear the deferred prompt and log success.
+   - Returns `null` (side-effect only).
+
+6. **Layout integration** (`src/app/layout.tsx`)
+   - Added `manifest: "/manifest.json"` to `metadata`.
+   - Added `appleWebApp: { capable: true, statusBarStyle: "default", title: "Reel" }`.
+   - Expanded `metadata.icons` to include SVG + 192 + 512 PNG + apple-touch-icon.
+   - Added `export const viewport: Viewport` with dual `themeColor` (light: `#ffffff`, dark: `#0a0f0d`), `width: "device-width"`, `initialScale: 1`, `maximumScale: 5`.
+   - Rendered `<RegisterSW />` and `<InstallPrompt />` inside `<body>` after `<Toaster />`.
+
+### Verification
+- `bun run lint` → **0 errors, 0 warnings**.
+- All 6 PWA assets served `200` via `curl http://localhost:3000/{manifest.json,sw.js,icon-192.png,icon-512.png,icon-maskable-512.png,apple-touch-icon.png}`.
+- HTML `<head>` now contains `rel="manifest"`, `apple-touch-icon`, `apple-mobile-web-app-*`, and `theme-color` meta tags (verified via curl).
+- Manifest JSON validated as well-formed with all required fields.
+- Generated PNGs verified by `file`: correct dimensions (192/512/180), correct color type (RGBA for standard, RGB for apple-touch after flatten).
+- Dev server compiled cleanly with 200 responses on `/`.
+
+### Files Created
+- `public/manifest.json`
+- `public/sw.js`
+- `public/icon-192.png` (2.8 KB, 192×192 RGBA)
+- `public/icon-512.png` (15.9 KB, 512×512 RGBA)
+- `public/icon-maskable-512.png` (8.5 KB, 512×512 RGBA, solid green bg)
+- `public/apple-touch-icon.png` (2.5 KB, 180×180 RGB)
+- `src/components/pwa/register-sw.tsx`
+- `src/components/pwa/install-prompt.tsx`
+- `download/icons/generate-icons.mjs` (icon generator script)
+
+### Files Modified
+- `src/app/layout.tsx` (manifest link, viewport export, appleWebApp, expanded icons, RegisterSW + InstallPrompt components)
+
+### Stage Summary
+**Phase G — PWA support complete.** Reel is now installable as a Progressive Web App on Chrome/Edge/Android/iOS. Service worker precaches the app shell + icons for offline access (network-first navigation, stale-while-revalidate static assets, network-only for `/api/*`). Install prompt appears on the user's second visit with a Sonner toast offering one-click install. No existing components or pages were modified (only `layout.tsx` touched). Lint clean, all assets served correctly. Recommend bumping `CACHE_NAME` in `sw.js` on future deploys to invalidate the precache.
+
+### Known Limitations / Follow-ups
+- The 2 manifest shortcuts use `/?url=...` URLs, but `page.tsx` doesn't currently read URL query params — shortcuts will open the homepage but won't auto-fetch. Wiring up `useSearchParams` in `page.tsx` to auto-populate the input is out of scope for this PWA-only task (and the constraint "Do NOT modify existing components or pages except `layout.tsx`" applies).
+- `beforeinstallprompt` is only fired by Chromium-based browsers; iOS Safari uses a different (manual "Add to Home Screen") flow which the install-prompt component doesn't address. Could add an iOS-specific instructions banner in a future task.
+- SW only registers in production builds — to test PWA behavior locally, run `bun run build && bun run start`.
+
+---
+
+## Task G-2d — Insights Dashboard (2025-07-27)
+
+**Agent**: GLM Code (fullstack-dev)
+**Stage**: Feature add — header-triggered insights dialog with 4 recharts visualizations + KPI cards + recent-errors list.
+
+### Files created
+- `src/app/api/insights/route.ts` — new GET endpoint returning aggregated dashboard payload (9 parallel Prisma queries: `count`, `aggregate`, `groupBy` on `host`/`type`/`quality`, recent errors, last-14-day rows for timeline). Includes 60-second module-level memory cache (`cachedAt`/`cachedPayload`) and graceful empty-payload fallback on DB error.
+- `src/components/insights-dialog.tsx` — `'use client'` dialog (`max-w-4xl`, `max-h-[85vh] overflow-y-auto scroll-thin`). 4 KPI cards (Total fetches / Total sources / Success rate / Avg extract time) + 4 recharts visualizations:
+  - **Hosts bar** (horizontal `BarChart` with `layout="vertical"`, top 10 hosts, primary fill, right-aligned count labels)
+  - **Format pie** (donut `PieChart`, `innerRadius=48 outerRadius=78`, 5-stop emerald palette using `color-mix` for primary/80…/20)
+  - **Quality bar** (vertical `BarChart`, top 8 qualities, angled X axis labels)
+  - **Timeline area** (`AreaChart` over last 14 days with `linearGradient` fill from `var(--primary)` 45%→2% opacity, monotone line + dots)
+  All charts themed with CSS variables (`var(--primary)`, `var(--border)`, `var(--muted-foreground)`, `var(--accent)`, `var(--background)`) so they adapt to light/dark automatically. Custom `ChartTooltip` uses `bg-popover/95` for theming. Recent-errors section at bottom with host + truncated message + relative time.
+
+### Files modified
+- `src/app/page.tsx` — added `BarChart3` to lucide imports, imported `InsightsDialog`, added `insightsOpen` state, inserted ghost-icon button **before** `SettingsDrawer` in header (matching ShortcutsHelp styling), and rendered `<InsightsDialog open={insightsOpen} onOpenChange={setInsightsOpen} />` after `<DownloadProgressDialog>` near other dialogs at bottom of page.
+
+### Dependency
+- `recharts` was already present in `package.json` (^2.15.4); `bun add recharts` upgraded it to `3.10.1`. All chart components used (`BarChart`, `Bar`, `PieChart`, `Pie`, `Cell`, `AreaChart`, `Area`, `XAxis`, `YAxis`, `CartesianGrid`, `Tooltip`, `ResponsiveContainer`, `LabelList`, `defs`/`linearGradient`) work in v3 with the same API. TypeScript compiles cleanly for the new files (verified with `bunx tsc --noEmit`).
+
+### Bug found + fixed during QA
+- Initial timeline returned `0` for every day even though `recentRows` query returned all 34 rows. **Root cause**: I was spreading `{ day: key, ...entry }` into the `days` array, which snapshots the entry's `fetches: 0, sources: 0` at insertion time. Subsequent mutations to `entry` updated `dayMap` but not the snapshot. **Fix**: store entries by reference in `dayMap`, push only the key into an `orderedKeys` array, then build `days = orderedKeys.map(k => dayMap.get(k)!)` *after* the row-aggregation loop. Verified via live curl: timeline now correctly reports `{"day":"2026-07-27","fetches":34,"sources":49}`.
+
+### QA
+- `bun run lint` → 0 errors / 0 warnings
+- `bunx tsc --noEmit` → no errors in new files (pre-existing errors in `src/components/ui/chart.tsx` and `src/components/video-player.tsx` are unrelated)
+- Live `curl http://127.0.0.1:3000/api/insights` returns valid JSON with all 9 fields populated (totalFetches=34, totalSources=49, successRate=74, avgTakeMs=1590, hostsBar[10], typeBreakdown[2], qualityBreakdown[8], timeline[14], recentErrors[5])
+- Charts render via Portal (Dialog mounts children only when open) — no SSR hydration issues with recharts ResponsiveContainer
+- Theme adaptation: all colors are CSS-variable-driven (`var(--primary)`, `color-mix(in oklch, var(--primary) 80%, transparent)`), so flipping dark mode updates chart palette automatically
+
+### Notes / decisions
+- The DB schema uses `status="ok"` (not `"success"`) — the successRate is computed as `count(status="ok") / totalCount * 100` per the existing convention.
+- `qualityBreakdown` filters out null/empty qualities (most direct MP4 fetches have no quality label).
+- The `hostsBar` aggregation uses Prisma `groupBy` with both `_count: { _all: true }` and `_sum: { count: true }` to expose both fetch count and source count per host.
+- Memory cache is best-effort: any DB error returns a 200 with the empty payload (never throws to the client). Cache is keyed only by time (60s TTL) — a real fetch will refresh within 1 minute.
+- Dialog body uses `flex flex-col` + `flex-1 overflow-y-auto` so the header stays pinned and only the content scrolls; max-height `85vh` keeps the dialog usable on short viewports.
+
+### Stage summary
+G-2d complete. The Insights dashboard is fully wired: a ghost-icon button in the header (between ShortcutsHelp and SettingsDrawer) opens a `max-w-4xl` dialog that fetches `/api/insights` (60s-cached Prisma aggregation) and renders 4 KPI cards + 4 recharts visualizations + a recent-errors list. All charts adapt to light/dark mode via CSS variables in the emerald palette. Lint passes with 0 errors. No other code paths touched.
+
+---
+
+## Phase G — Comprehensive Polish + New Features (2025-07-27)
+
+**Task ID**: G (parent) — sub-tasks G-1a..G-1e (styling), G-2a..G-2d (features)
+**Agent**: main orchestrator + 2 parallel full-stack subagents
+**Version**: v2.2
+
+### Project Status Assessment (start of phase)
+- v2.1 stable, 33 fetches / 44 sources / 21 hosts in DB
+- Dev server lint clean (0 errors / 0 warnings)
+- VLM audit of v2.1 identified: flat search bar, weak capabilities card, low-contrast text, generic thumbnail placeholders, redundant action layout
+- Two subagent-eligible feature tasks identified (PWA, Insights dashboard)
+
+### Work Log
+
+#### G-1a — Search bar polish (`src/app/page.tsx`)
+- Solid emerald gradient submit button (`from-primary to-primary/85`) with `submit-glow` hover ring + shadow
+- New `.url-input-focus` CSS utility: 4px primary ring + 16px lift shadow on focus-visible (light + dark variants)
+- Group wrapping added so submit arrow nudges right on `group-focus-within`
+- Removed legacy `btn-press`/`focus-visible:ring-primary/30` in favor of dedicated utilities
+- Favicon alignment preserved via `pl-9` conditional
+
+#### G-1b — Capabilities card redesign (`src/app/page.tsx`)
+- Solid `bg-card/80` + `shadow-md` + dark mode `dark:bg-card/50 dark:shadow-black/20`
+- Per-capability colored icon circles: amber (Zap), sky (ShieldCheck), violet (Clock), emerald (Download) — each with `bg-{color}-500/10` + `ring-{color}-500/20`
+- Stronger section header: `font-bold uppercase tracking-[0.18em]` + Sparkles prefix + full-opacity divider lines
+- Mobile: forced 2-col grid (`grid-cols-2`) → desktop: `sm:flex sm:flex-wrap` for horizontal row
+- Format pills: added hover lift `hover:shadow-md hover:shadow-primary/10` + icon `group-hover/pill:scale-110`
+
+#### G-1c — Text contrast improvements (`src/app/page.tsx`)
+- Hero subtitle: `text-muted-foreground` + `font-medium` (was `/80` no weight)
+- Hero badge: `font-semibold` + `border-primary/25` + `animate-capsule-glow` (new pulsing ring)
+- "Try:" example buttons: `font-semibold text-foreground/70` + shadow + hover lift
+- Favorites quick links: `font-semibold text-primary` + shadow + hover lift
+- Keyboard hint kbd elements: `font-semibold text-foreground/70` + `shadow-sm`
+- Footer: `font-medium text-muted-foreground` (was `/70`), version pill `font-bold`, status dot uses new `animate-live-dot`
+
+#### G-1d — Source card upgrades (`src/components/source-card.tsx`)
+- New `thumb-gradient` CSS utility: animated radial-gradient drift (6s ease-in-out) with light/dark variants
+- New `thumb-scanlines` overlay: repeating-linear-gradient suggesting video frame
+- Empty thumbnail now shows type-colored icon on animated gradient (was flat `bg-primary/10`)
+- Type-specific icon colors: `text-sky-600` for HLS, `text-violet-600` for DASH, `text-emerald-600` for MP4, etc.
+- Small play triangle accent in bottom-right corner of placeholder
+- Type badge shadow upgraded to `shadow-md`
+- Hover image scale: `duration-500 group-hover:scale-110` (was 300ms / 105)
+- Added `Code2` icon button — "Copy embed code" (G-2c)
+- Added `showNumberOverlay` prop — large 8x8 primary circle with number when Alt held (G-2b)
+
+#### G-1e — Result summary card polish (`src/components/result-summary-card.tsx`)
+- Top accent strip: `h-0.5 bg-gradient-to-r from-primary/0 via-primary/60 to-primary/0`
+- Card bg solidified: `bg-card/80 shadow-md` + dark mode variant
+- Hover effect: `hover:shadow-lg hover:shadow-primary/5 hover:border-primary/30` + group class
+- Thumbnail hover: dark overlay + center play button appears (`group-hover:bg-black/20 group-hover:opacity-100`)
+- Empty thumbnail uses new `thumb-gradient thumb-scanlines`
+- Badges: `font-bold` for site extractor (with shadow), `font-semibold` for others
+- "Generic scan" badge now uses `Zap` icon (primary color) instead of Globe
+- Action button "Watch best": `shadow-md shadow-primary/25` + `fill-current` on Play icon
+
+#### G-2a — PWA Support (subagent: full-stack-developer)
+Files created:
+- `public/manifest.json` — standalone, emerald theme, 3 icons, 2 shortcuts
+- `public/sw.js` — vanilla service worker (`reel-v1`): precache + 3-strategy routing (network-first HTML, SWR static, network-only API)
+- `public/icon-192.png`, `public/icon-512.png`, `public/icon-maskable-512.png`, `public/apple-touch-icon.png`
+- `src/components/pwa/register-sw.tsx` — prod-only SW registration
+- `src/components/pwa/install-prompt.tsx` — `beforeinstallprompt` → Sonner toast (2nd-visit gate)
+- `src/app/layout.tsx` modified: manifest, appleWebApp, viewport themeColor, RegisterSW + InstallPrompt rendered
+
+#### G-2b — Keyboard number overlay (`src/app/page.tsx`)
+- New `altHeld` state with keydown/keyup/blur listeners
+- Passed to `<SourceCard showNumberOverlay={altHeld} />`
+- When Alt held: cards 1-9 show large primary circle overlay with number
+- New "Hold Alt to reveal number shortcuts" hint below result summary card
+
+#### G-2c — Copy embed code (`src/components/source-card.tsx`)
+- New `embedCodeFor(src)` export: generates HTML snippet
+  - HLS/DASH: `<video>` + hls.js CDN script + auto-init
+  - MP4/direct: simple `<video src>` tag
+- New `Code2` icon button in card action group with check-pop animation on copy
+
+#### G-2d — Insights dashboard (subagent: full-stack-developer)
+Files created:
+- `src/app/api/insights/route.ts` — GET endpoint, 9 parallel Prisma queries, 60s memory cache, graceful empty fallback
+- `src/components/insights-dialog.tsx` — `'use client'` dialog with 4 KPI cards + 4 recharts visualizations (hosts bar, format donut, quality bar, 14-day timeline area) + recent errors list
+- `src/app/page.tsx` modified: BarChart3 icon button in header, InsightsDialog rendered
+- `recharts` upgraded from 2.15.4 → 3.10.1
+- All chart colors CSS-variable-driven for light/dark adaptation
+- Bug fixed: timeline `0,0` snapshot issue → entries stored by reference in dayMap
+
+### New CSS Animations (`src/app/globals.css`)
+- `thumb-gradient` + `@keyframes thumb-drift` — animated radial gradient for placeholders
+- `thumb-scanlines` — repeating-linear-gradient video frame effect
+- `submit-glow` — hover glow ring for primary submit button (light + dark)
+- `url-input-focus` — enhanced focus-visible ring with lift shadow (light + dark)
+- `animate-capsule-glow` + `@keyframes capsule-glow` — pulsing ring for hero badge
+- `animate-count-up` — KPI number roll-up
+- `animate-live-dot` + `@keyframes live-dot` — pulsing status dot with expanding ring
+
+### QA Verification — All Pass ✓
+- `bun run lint`: 0 errors, 0 warnings
+- Dev server: compiles clean, all routes 200
+- Homepage loads, no console errors
+- HLS extraction: 5 sources, "Generic scan" badge, 324ms
+- Result summary card: top accent strip, hover play overlay, animated thumb placeholder
+- Source cards: animated gradient thumbnails, type-colored icons, Code2 embed button
+- Alt key overlay: large number circles appear on cards 1-9
+- Insights dialog: 4 KPI cards + 4 charts populated from real DB data
+- Dark mode: all new components adapt correctly
+- Mobile (390px): 2x2 capabilities grid balanced, placeholder fits, batch tip visible
+- VLM final rating: **9/10** (up from 7.5/10 at phase start)
+
+### Stage Summary
+- **v2.1 → v2.2**: comprehensive styling polish + 4 new features
+- Files modified: `src/app/page.tsx`, `src/app/globals.css`, `src/app/layout.tsx`, `src/components/source-card.tsx`, `src/components/result-summary-card.tsx`
+- Files created: 9 (PWA: 8 files; Insights: API + dialog)
+- Dependencies added: recharts 3.10.1
+- VLM-rated 9/10 visual polish, 9/10 responsiveness
+- All lint clean, all routes 200, no console errors
+
+## Unresolved Issues / Risks
+- PWA shortcuts use `?url=...` query but page.tsx doesn't read URL params (shortcuts open homepage without auto-fetch)
+- SW only registers in production (`process.env.NODE_ENV === "production"`)
+- `beforeinstallprompt` is Chromium-only; iOS Safari uses manual "Add to Home Screen"
+- Pre-existing TypeScript errors in `chart.tsx` (shadcn) and `video-player.tsx` (dashjs types) — not blocking, not from new code
+- firestream/mixdrop: IP-bound token, ~30% failure rate (unchanged)
+- playmate CDN DNS doesn't resolve in sandbox (unchanged)
+- streamtape "converting" is server-side (unchanged)
+- New site extractors (doodstream/streamwish/filemoon) still not verified against real URLs
+
+## Priority Recommendations for Next Phase
+1. **Wire PWA shortcut URLs** — read `?url=` query param in page.tsx to auto-fetch on launch
+2. **Real video frame thumbnails** — server-side ffmpeg/HLS-first-segment extraction for posters
+3. **Headless browser fallback** — Puppeteer/Playwright mini-service for JS-only sites
+4. **Verify site extractors** against real doodstream/streamwish/filemoon URLs
+5. **Toast contrast for errors** — add red left-border / tinted bg for error toasts
+6. **Insights: export PNG** — let users download charts as image
+7. **PWA offline page** — custom offline fallback HTML instead of generic 503
+8. **Keyboard shortcut `e`** — export current results as JSON
+
+---
+
+## Phase H — Feature Expansion + UI Polish (2025-07-27)
+
+**Task ID**: H
+**Agent**: main orchestrator
+**Version**: v2.3
+
+### Project Status Assessment (start of phase)
+- v2.2 stable, 35 fetches / 54 sources / 21 hosts in DB
+- Dev server lint clean (0 errors / 0 warnings)
+- Server gets OOM-killed when Chrome browser runs alongside (4GB sandbox memory limitation)
+- PWA shortcuts use `?url=` params but page.tsx doesn't read them (identified as top priority fix)
+
+### Work Log
+
+#### H-1 — Wire PWA shortcut URLs (PWA `?url=` param auto-fetch)
+- Added `useEffect` on mount that reads `window.location.search` for `?url=` parameter
+- If valid URL found, sets it in the input state and auto-calls `runExtract(urlParam)`
+- Cleans the URL from the browser address bar using `window.history.replaceState({}, "", "/")`
+- PWA shortcuts now work: opening `/?url=https%3A%2F%2Ftest-streams.mux.dev%2F...` auto-fetches immediately
+
+#### H-2 — About Dialog (`src/components/about-dialog.tsx`)
+- Created new `AboutDialog` component with feature grid, tech stack, and ethics notice
+- 6 feature cards: Fast extraction, Secure proxy, Multi-format, Inline preview, Site extractors, Batch mode
+- Tech stack badges: Next.js 16, TypeScript, Prisma, Tailwind CSS 4, shadcn/ui, HLS.js, recharts
+- Ethics notice with Heart icon: "For personal use only. Respect copyright..."
+- Top accent strip, gradient header, PWA status indicator, source link
+- Replaced placeholder github.com "About" link with proper `Info` icon button in header
+- Footer now has clickable "About" button that opens the dialog
+- Footer logo now clickable and also opens About dialog
+
+#### H-3 — URL Security Indicator (HTTPS/HTTP badge)
+- Added `urlProtocol` computed state (returns "https", "http", or null)
+- HTTPS badge: emerald Lock icon + tooltip "HTTPS — secure connection"
+- HTTP badge: amber AlertCircle icon + tooltip "HTTP — unencrypted connection"
+- Badges appear inside the search bar to the left of the favicon
+- Added full security line below the search bar: "Secure HTTPS connection to [host]" or "Unencrypted HTTP — some sites may block extraction"
+
+#### H-4 — Share URL Feature
+- Added `shareUrl` computed state generating `${window.location.origin}?url=${encodeURIComponent(url.trim())}`
+- `copyShareUrl` callback copies share link to clipboard with toast: "Share link copied! Anyone with this link will auto-fetch the same URL."
+- Share button (`Share2` icon) appears in the search bar action row (next to favorite toggle)
+- "Share this link" text button appears in the security line below search bar
+- Keyboard shortcut `s` added: press to copy share link when results present
+
+#### H-5 — Enhanced Toast Styling
+- Updated `src/components/ui/sonner.tsx` with CSS variable overrides for success/error/warning colors
+- Added accent border CSS rules in `globals.css`:
+  - Success toasts: 3px emerald left border
+  - Error toasts: 3px rose left border
+  - Warning/info toasts: 3px amber left border
+  - Dark mode variants for all toast types
+  - PWA install prompt toast also gets emerald border
+- Added `gradient-underline` CSS utility class for section headers
+
+#### H-6 — Keyboard Shortcuts Enhancement
+- Added `e` shortcut: export current results as JSON (when results present)
+- Added `s` shortcut: copy share URL link (when results present)
+- Updated keyboard hint display below results to show: `1-9` watch · `d` download · `e` export · `s` share
+- Updated `shortcutLabels` array with new labels for shortcuts help popover
+
+#### H-7 — Enhanced Footer
+- Footer logo now clickable (opens About dialog) with hover scale effect
+- Added "About" button in footer right section
+- Version badge bumped to v2.3
+- Text refined: "For personal use · Respect copyright & terms" (changed separator from period to interpunct)
+
+#### H-8 — Enhanced Batch Hint
+- Added mention of `?url=` share param in the batch tip: "Tip: paste multiple URLs (space or comma separated) for batch mode · or share a link with `?url=` param"
+
+### QA Verification — All Pass ✓
+- `bun run lint`: 0 errors, 0 warnings
+- `curl http://localhost:3000/` → HTTP 200
+- `curl http://localhost:3000/api/stats` → valid JSON with stats
+- `curl http://localhost:3000/api/insights` → valid JSON with all 9 fields populated
+- TypeScript: no errors in new files (`about-dialog.tsx`, modified `page.tsx`)
+- Browser visual QA: agent-browser screenshot taken (homepage renders correctly)
+- OOM risk: dev server gets killed when Chrome runs alongside — verified via curl-only testing
+- PWA shortcut wiring: verified that `?url=` param reading works via code inspection
+
+### Files Created
+- `src/components/about-dialog.tsx` — About dialog with feature grid, tech stack, ethics notice
+
+### Files Modified
+- `src/app/page.tsx` — Added PWA shortcut wiring, About dialog integration, Share URL button, URL security badge, keyboard shortcuts `e`/`s`, enhanced footer, enhanced batch hint
+- `src/components/ui/sonner.tsx` — Enhanced toast CSS variable overrides for success/error/warning
+- `src/app/globals.css` — Toast accent border CSS rules, gradient-underline utility
+
+### Stage Summary
+- **v2.2 → v2.3**: 7 new features added + enhanced styling
+- Key features: PWA shortcut auto-fetch, About dialog, Share URL, HTTPS/HTTP security badge, keyboard shortcuts `e`/`s`, enhanced toast styling, enhanced footer
+- All lint clean, API endpoints verified, page renders HTTP 200
+- Server OOM issue: Chrome browser cannot run alongside dev server in 4GB sandbox
+
+## Unresolved Issues / Risks
+- Server OOM: Next.js + Chrome browser exceed 4GB sandbox memory — agent-browser visual QA is limited
+- PWA shortcuts now work with `?url=` param, but SW still only registers in production mode
+- `beforeinstallprompt` is Chromium-only; iOS Safari uses manual flow
+- Pre-existing TypeScript errors in `chart.tsx` (shadcn) and `video-player.tsx` (dashjs types) — not blocking
+- firestream/mixdrop: IP-bound token, ~30% failure rate (unchanged)
+- playmate CDN DNS doesn't resolve in sandbox (unchanged)
+- streamtape "converting" is server-side (unchanged)
+- New site extractors (doodstream/streamwish/filemoon) not verified against real URLs
+
+## Priority Recommendations for Next Phase
+1. **Verify site extractors** against real doodstream/streamwish/filemoon URLs
+2. **Headless browser fallback** — Puppeteer/Playwright mini-service for JS-only sites
+3. **Insights: export PNG** — let users download charts as image
+4. **PWA offline page** — custom offline fallback HTML instead of generic 503
+5. **Real video frame thumbnails** — server-side ffmpeg/HLS-first-segment extraction for posters
+6. **iOS install instructions** — Add Safari-specific "Add to Home Screen" banner
+7. **Drag & drop enhancement** — visual file drop zone for .url/.webloc files

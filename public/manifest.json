@@ -1,0 +1,51 @@
+{
+  "name": "Reel — Video Fetch & Download",
+  "short_name": "Reel",
+  "description": "Paste a link. Fetch the video. Watch or download in one click.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "background_color": "#ffffff",
+  "theme_color": "#0F9D6B",
+  "orientation": "any",
+  "lang": "en",
+  "dir": "ltr",
+  "categories": ["utilities", "productivity", "entertainment"],
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Fetch HLS demo",
+      "short_name": "HLS demo",
+      "description": "Fetch the Mux HLS test stream",
+      "url": "/?url=https%3A%2F%2Ftest-streams.mux.dev%2Fx36xhzz%2Fx36xhzz.m3u8",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "Fetch MP4 demo",
+      "short_name": "MP4 demo",
+      "description": "Fetch the W3Schools MP4 test video",
+      "url": "/?url=https%3A%2F%2Fwww.w3schools.com%2Fhtml%2Fmov_bbb.mp4",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    }
+  ]
+}

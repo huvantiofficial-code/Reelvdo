@@ -1,0 +1,72 @@
+# dependencies
+node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# database (SQLite) — generated locally & ephemeral on Vercel
+/db/*.db
+/db/*.db-journal
+*.db
+*.db-journal
+
+# temp runtime dirs (downloads / uploads)
+/download
+/upload
+
+# misc
+.DS_Store
+*.pem
+Thumbs.db
+
+# debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (keep .env.example committed)
+.env
+.env.*
+!.env.example
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# sandbox / local-only
+local-*
+.claude
+.z-ai-config
+*.log
+dev.log
+dev.out.log
+server.log
+
+# sandbox-only directories & config (not needed for Vercel deployment)
+/skills/
+/mini-services/
+/examples/
+/tests/
+/agent-ctx/
+/tool-results/
+/.zscripts/
+Caddyfile
+prompt
