@@ -378,11 +378,33 @@ export default function Home() {
   };
 
   const openWatch = (s: VideoSource) => {
+    // iframe sources are HTML pages (e.g. DoodStream clones with captcha).
+    // They can't be played in our video player — open in a new tab instead.
+    if (s.type === "iframe") {
+      if (typeof window !== "undefined") {
+        window.open(s.url, "_blank", "noopener,noreferrer");
+        toast.info("Opened source page in a new tab", {
+          description: "Solve the captcha on the source site to watch or download.",
+        });
+      }
+      return;
+    }
     setWatch(s);
     setWatchOpen(true);
   };
 
   const openDownload = (s: VideoSource) => {
+    // iframe sources: open in a new tab — we can't proxy a captcha-protected
+    // HTML page through the download stream.
+    if (s.type === "iframe") {
+      if (typeof window !== "undefined") {
+        window.open(s.url, "_blank", "noopener,noreferrer");
+        toast.info("Opened source page in a new tab", {
+          description: "Solve the captcha on the source site to download.",
+        });
+      }
+      return;
+    }
     setDownload(s);
     setDownloadOpen(true);
   };
@@ -501,6 +523,24 @@ export default function Home() {
   const poster = result?.meta?.thumbnail;
   const bestSource = hasResults ? sortByQuality(result.sources)[0] : undefined;
   const bestUrl = bestSource?.url;
+  // When sources are iframe-type (captcha-protected pages, e.g. playmogo.com
+  // DoodStream clones), the "best" source may be a "Watch" page. Provide a
+  // separate best-download source that prefers an iframe source labeled
+  // "Download" so the Download-best button opens the right page.
+  const bestDownloadSource = hasResults
+    ? (() => {
+        const sources = result.sources;
+        // Prefer an iframe source whose quality/label mentions "download".
+        const dlIframe = sources.find(
+          (s) =>
+            s.type === "iframe" &&
+            (s.quality === "Download" || /download/i.test(s.label || ""))
+        );
+        if (dlIframe) return dlIframe;
+        // Otherwise fall back to the overall best source.
+        return bestSource;
+      })()
+    : undefined;
 
   // Live batch-mode detection for the input pill.
   const detectedUrls = useMemo(() => parseUrls(url), [url]);
@@ -1216,7 +1256,7 @@ export default function Home() {
                 finalUrl={result.finalUrl}
                 bestSource={bestSource}
                 onWatchBest={bestSource ? () => openWatch(bestSource) : undefined}
-                onDownloadBest={bestSource && settings.downloadMode === "progress" ? () => openDownload(bestSource) : undefined}
+                onDownloadBest={bestDownloadSource && settings.downloadMode === "progress" ? () => openDownload(bestDownloadSource) : undefined}
               />
             )}
 

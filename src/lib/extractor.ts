@@ -448,8 +448,14 @@ export async function extract(rawUrl: string): Promise<ExtractResult> {
     const iframeHost = safeHost(finalUrl);
     for (const iframeUrl of iframes.slice(0, 4)) {
       const ih = safeHost(iframeUrl);
-      // Only recurse into iframes that are same-ish host or known embed hosts.
-      if (ih && (ih === iframeHost || /embed|player|video|stream|cdn|play/i.test(ih))) {
+      // Only recurse into iframes that are same-ish host OR known embed hosts.
+      // The regex catches common embed-host name fragments; morencius/vidhide
+      // hosts are also explicitly listed because minochinos.com and similar
+      // front-ends iframe to them.
+      const knownEmbedHost =
+        /embed|player|video|stream|cdn|play|morencius|vidhide|doodstream|dood\.|filemoon|streamwish|swhoi|filelions|lulu|firestream|mixdrop|odysseusa|vidara/i.test(ih || "") ||
+        /\/embed\//.test(iframeUrl);
+      if (ih && (ih === iframeHost || knownEmbedHost)) {
         try {
           const r = await fetchText(iframeUrl);
           const ifDecoded = decodeObfuscated(r.text);
@@ -481,7 +487,13 @@ export async function extract(rawUrl: string): Promise<ExtractResult> {
 
   // Dedupe & expand m3u8 master playlists. Drop sources that point back to the
   // page itself (a common false positive when the page URL ends in .mp4).
-  const deduped = dedupe(sources).filter((s) => !isSameUrl(s.url, finalUrl));
+  // Exception: iframe sources intentionally point at the page URL (e.g.
+  // DoodStream clones return /e/{filecode} and /d/{filecode} as "open page"
+  // sources — the download-page source may equal finalUrl, but that's by
+  // design, not a false positive).
+  const deduped = dedupe(sources).filter(
+    (s) => s.type === "iframe" || !isSameUrl(s.url, finalUrl)
+  );
   const expanded: VideoSource[] = [];
   for (const s of deduped) {
     if (s.type === "m3u8") {
@@ -494,7 +506,9 @@ export async function extract(rawUrl: string): Promise<ExtractResult> {
     }
   }
 
-  const final = dedupe(expanded).filter((s) => !isSameUrl(s.url, finalUrl));
+  const final = dedupe(expanded).filter(
+    (s) => s.type === "iframe" || !isSameUrl(s.url, finalUrl)
+  );
   // Sort: mp4 first, then m3u8 by quality, then others.
   final.sort((a, b) => typeRank(a.type) - typeRank(b.type) || qualityRank(b.quality) - qualityRank(a.quality));
 

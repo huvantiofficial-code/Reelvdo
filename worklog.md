@@ -740,3 +740,46 @@ Unresolved / Risks:
 - miiiixdrop.net (MixDrop clone): **FIXED** — extraction was already correct; the proxy retry-with-backoff resolved the intermittent CDN 403 rate-limiting. Both preview and download now work reliably.
 - The `trustSiteSources` change also improves all other known-site extractions by eliminating generic-scan false positives.
 - Files modified: `src/lib/site-extractors.ts`, `src/lib/extractor.ts`, `src/app/api/proxy/route.ts`.
+
+---
+Task ID: G — minochinos.com + playmogo.com extractor fixes
+Agent: main
+Task: Fix preview/watch + download for https://minochinos.com/file/tj06jywaj51w and https://playmogo.com/d/r8kcb3z4sk7q
+
+Work Log:
+- Investigated minochinos.com page structure: it embeds `https://morencius.com/embed/{filecode}` in an iframe AND inlines the same eval packer in the page HTML. The packer decodes to `var links = { hls4, hls3, hls2 }; jwplayer("vplayer").setup({ sources:[{file: links.hls4 || links.hls3 || links.hls2, type:"hls"}] })`. The hls2 URL is the canonical CDN master.m3u8 with signed token.
+- Verified minochinos extraction was already working via the generic extractor's packer-decode path (returns the HLS variant playlist URL with 720p quality).
+- Verified minochinos preview/playback works end-to-end: extract → playlist rewrite → segment streaming → hls.js playback (video plays, duration 24:39 = 1479.06s).
+- Verified minochinos download works: /api/stream returns 200, download-progress dialog shows real-time progress (2.2 MB at 106 KB/s during test).
+- Investigated playmogo.com: it's a DoodStream white-label clone. The /d/{filecode} download page is accessible but exposes only a one-time /download/{token1}/n/{token2} link that requires Google reCAPTCHA. The /e/{filecode} embed page requires Cloudflare Turnstile. The /cptr, /api/site, /dood?op=info, /pass_md5 endpoints are all behind Cloudflare's "Just a moment..." challenge.
+- Confirmed playmogo.com MP4 cannot be extracted server-side (POST to /download/{token1}/n/{token2} returns the DoodStream homepage instead of the MP4 — the form's hash is session-bound and requires a valid cf_clearance cookie + reCAPTCHA response that we cannot obtain without a headless browser).
+- Added `extractMorenciusFamily()` to `src/lib/site-extractors.ts`: dedicated extractor for the Morencius/VidHide embed-page pattern. Decodes the packer, finds `var links = { hls4, hls3, hls2 }`, and returns the canonical CDN m3u8 URL (prefers hls2, falls back to hls3/hls4). Handles the case where the user pastes a direct morencius.com/embed/{id} URL.
+- Added `extractDoodstreamClone()` to `src/lib/site-extractors.ts`: detects doodstream-clone pattern via `doodcdn.io` asset reference + `/d/` or `/e/` URL pattern. Returns TWO iframe-type sources:
+    1. `{origin}/e/{filecode}` — labeled "Open watch page · captcha required" (quality: "Watch")
+    2. `{origin}/d/{filecode}` — labeled "Open download page · captcha required" (quality: "Download")
+  These open in a new browser tab where the user can solve the captcha interactively.
+- Wired both new extractors into the host-based dispatch in `trySiteExtractor()`. Added explicit host checks for `morencius`, `vidhide`, `minochinos`, `playmogo`, `mosevura`, `dramiyos`, `earnvids`. Added content-based fallbacks so unknown mirror domains are auto-detected via packer pattern (`var links = { hls[234] }`) and HTML content (`doodcdn.io`).
+- Updated `src/components/source-card.tsx` to render iframe-type sources differently:
+    * Shows a "Captcha" amber badge next to the source type
+    * Shows a "Site requires interactive captcha. Open in a new tab to watch or download." notice
+    * Replaces the Watch/Download buttons with a single "Open watch" or "Open download" button (determined by source.quality) that opens the URL in a new tab via `<a target="_blank">`
+    * Hides the "Copy embed code" button for iframe sources (not embeddable)
+- Updated `src/app/page.tsx` `openWatch()` and `openDownload()` to detect iframe sources and call `window.open(url, "_blank")` with a toast notification instead of trying to play/proxy an HTML page.
+- Added a `bestDownloadSource` selector in `src/app/page.tsx` that prefers an iframe source labeled "Download" for the Download-best button (so it opens the /d/ page rather than the /e/ page). The Watch-best button uses the existing bestSource (which is the Watch iframe source).
+- Updated `src/lib/extractor.ts` to:
+    * Skip the `isSameUrl(s.url, finalUrl)` filter for iframe sources (the download-page source URL legitimately equals finalUrl for DoodStream clones).
+    * Expanded the iframe-recursion host regex to include `morencius|vidhide|doodstream|dood\.|filemoon|streamwish|swhoi|filelions|lulu|firestream|mixdrop|odysseusa|vidara` AND any iframe URL containing `/embed/`. This catches morencius.com embeds from minochinos.com front-ends.
+- Verified end-to-end with agent-browser:
+    * minochinos.com: extract → 1 HLS source (720p), Watch best opens player, video loads (duration 1479.06s), playback works after fresh extract.
+    * playmogo.com: extract → 2 iframe sources (Watch + Download pages), Watch best opens /e/{filecode} in new tab, Download best opens /d/{filecode} in new tab. Source cards show "Captcha" badge + "Open watch"/"Open download" buttons.
+- Lint: 0 errors, 0 warnings.
+
+Stage Summary:
+- minochinos.com — preview/watch + download already worked (the inline packer in the page HTML provides the HLS URL via the generic extractor). Verified end-to-end via agent-browser. Added a dedicated `extractMorenciusFamily` extractor for robustness and to handle direct embed URLs.
+- playmogo.com — cannot extract MP4 server-side due to Cloudflare Turnstile + Google reCAPTCHA. Added `extractDoodstreamClone` extractor that returns iframe-type sources pointing to the watch (/e/) and download (/d/) pages. The UI now shows "Open watch"/"Open download" buttons with a clear captcha notice. Users click these to open the source page in a new tab and solve the captcha interactively.
+- Files changed:
+    * `src/lib/site-extractors.ts` (+180 lines): extractMorenciusFamily, extractDoodstreamClone, host dispatch updates, content-based fallbacks.
+    * `src/lib/extractor.ts` (+15 lines): iframe-aware filter, expanded iframe-recursion host regex.
+    * `src/components/source-card.tsx` (+60 lines): iframe-aware rendering with "Open watch"/"Open download" buttons, Captcha badge, captcha notice.
+    * `src/app/page.tsx` (+25 lines): openWatch/openDownload handle iframe via window.open, bestDownloadSource selector.
+- New UI behavior for captcha-protected sites: prominent amber "Captcha" badge, helpful notice text, single-action buttons that open the source page in a new tab, toast notification explaining the captcha requirement.

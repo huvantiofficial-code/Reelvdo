@@ -15,6 +15,8 @@ import {
   Star,
   StarOff,
   Code2,
+  ShieldAlert,
+  Eye,
 } from "lucide-react";
 import type { MediaType, VideoSource } from "@/lib/types";
 import { Button } from "@/components/ui/button";
@@ -167,6 +169,13 @@ export function SourceCard({ source, index, onWatch, onDownloadProgress, poster,
   const host = hostOf(source.url);
   const accent = TYPE_ACCENT[source.type] || "from-primary/85 to-primary/95";
   const iconColor = TYPE_ICON_COLOR[source.type] || "text-primary";
+  // iframe sources are pages that require interactive captcha (e.g.
+  // playmogo.com DoodStream clones). We can't preview/download them
+  // server-side — the user must open the page in a new tab.
+  const isIframe = source.type === "iframe";
+  // For iframe sources, the label/quality tells us which page this is
+  // (watch vs download). Use it to pick the right button label.
+  const isWatchPage = isIframe && (source.quality === "Watch" || /watch/i.test(source.label || ""));
 
   const copy = async () => {
     try {
@@ -287,6 +296,12 @@ export function SourceCard({ source, index, onWatch, onDownloadProgress, poster,
                 .{source.ext}
               </span>
             )}
+            {isIframe && (
+              <span className="inline-flex items-center gap-0.5 rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600 dark:text-amber-400">
+                <ShieldAlert className="h-2.5 w-2.5" />
+                Captcha
+              </span>
+            )}
           </div>
           <div className="mt-1 flex items-center gap-1.5 truncate text-[11px] text-muted-foreground">
             <Globe className="h-3 w-3 shrink-0 text-muted-foreground" />
@@ -302,42 +317,73 @@ export function SourceCard({ source, index, onWatch, onDownloadProgress, poster,
               </kbd>
             )}
           </div>
+          {isIframe && (
+            <div className="mt-1.5 text-[10px] leading-tight text-amber-600 dark:text-amber-400/90">
+              Site requires interactive captcha. Open in a new tab to watch or download.
+            </div>
+          )}
         </div>
       </div>
 
       <div className="flex shrink-0 items-center gap-1">
-        <Button
-          size="sm"
-          variant="default"
-          onClick={onWatch}
-          className="gap-1.5 btn-press shadow-sm"
-        >
-          <Play className="h-3.5 w-3.5" />
-          Watch
-        </Button>
-        {onDownloadProgress ? (
+        {isIframe ? (
+          // For iframe (captcha-protected page) sources, render a single
+          // prominent "Open page" button that opens the URL in a new tab.
+          // No Watch/Download buttons — those would fail because the URL is
+          // an HTML page, not a media file.
           <Button
             size="sm"
-            variant="outline"
-            onClick={onDownloadProgress}
-            className="gap-1.5 btn-press"
-            title="Download with progress"
-          >
-            <Download className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">Download</span>
-          </Button>
-        ) : (
-          <Button
-            size="sm"
-            variant="outline"
+            variant="default"
             asChild
-            className="gap-1.5"
+            className="gap-1.5 btn-press shadow-sm"
           >
-            <a href={downloadUrlFor(source)} download>
-              <Download className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Download</span>
+            <a
+              href={source.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={isWatchPage ? "Open watch page in a new tab" : "Open download page in a new tab"}
+            >
+              {isWatchPage ? <Eye className="h-3.5 w-3.5" /> : <Download className="h-3.5 w-3.5" />}
+              <span className="hidden sm:inline">{isWatchPage ? "Open watch" : "Open download"}</span>
+              <span className="sm:hidden">{isWatchPage ? "Watch" : "Download"}</span>
             </a>
           </Button>
+        ) : (
+          <>
+            <Button
+              size="sm"
+              variant="default"
+              onClick={onWatch}
+              className="gap-1.5 btn-press shadow-sm"
+            >
+              <Play className="h-3.5 w-3.5" />
+              Watch
+            </Button>
+            {onDownloadProgress ? (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={onDownloadProgress}
+                className="gap-1.5 btn-press"
+                title="Download with progress"
+              >
+                <Download className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Download</span>
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                variant="outline"
+                asChild
+                className="gap-1.5"
+              >
+                <a href={downloadUrlFor(source)} download>
+                  <Download className="h-3.5 w-3.5" />
+                  <span className="hidden sm:inline">Download</span>
+                </a>
+              </Button>
+            )}
+          </>
         )}
         {/* Divider */}
         <span aria-hidden className="mx-0.5 h-6 w-px bg-border/70" />
@@ -364,27 +410,29 @@ export function SourceCard({ source, index, onWatch, onDownloadProgress, poster,
             </Tooltip>
           </TooltipProvider>
         )}
-        {/* Copy embed code */}
-        <TooltipProvider delayDuration={300}>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={copyEmbed}
-                aria-label="Copy embed code"
-                className="h-8 w-8 px-0 text-muted-foreground hover:text-foreground btn-press"
-              >
-                {embedCopied ? (
-                  <Check className="h-3.5 w-3.5 text-primary animate-check-pop" />
-                ) : (
-                  <Code2 className="h-3.5 w-3.5" />
-                )}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="top">{embedCopied ? "Embed copied!" : "Copy embed code"}</TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
+        {/* Copy embed code — hidden for iframe sources (not embeddable) */}
+        {!isIframe && (
+          <TooltipProvider delayDuration={300}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={copyEmbed}
+                  aria-label="Copy embed code"
+                  className="h-8 w-8 px-0 text-muted-foreground hover:text-foreground btn-press"
+                >
+                  {embedCopied ? (
+                    <Check className="h-3.5 w-3.5 text-primary animate-check-pop" />
+                  ) : (
+                    <Code2 className="h-3.5 w-3.5" />
+                  )}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top">{embedCopied ? "Embed copied!" : "Copy embed code"}</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        )}
         <TooltipProvider delayDuration={300}>
           <Tooltip>
             <TooltipTrigger asChild>

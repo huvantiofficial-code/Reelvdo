@@ -677,6 +677,147 @@ function extractFilemoon(html: string, finalUrl: string): VideoSource[] | null {
   return sources.length ? sources : null;
 }
 
+/* ------------------------------------------------------------------ */
+/* Site: Morencius / VidHide family (morencius.com, vidhide.com,        */
+/*   vidhidepro.com, etc.) — embed pages with eval packer that decodes  */
+/*   to `var links = { hls4, hls3, hls2 }` + jwplayer setup using       */
+/*   `links.hls4 || links.hls3 || links.hls2`. Used by minochinos.com   */
+/*   and other "front" pages that iframe to /embed/{filecode} on a      */
+/*   morencius/vidhide host.                                            */
+/* ------------------------------------------------------------------ */
+function extractMorenciusFamily(html: string, finalUrl: string): VideoSource[] | null {
+  const decoded = decodePacker(html);
+  const haystack = decoded || html;
+  const sources: VideoSource[] = [];
+  const seen = new Set<string>();
+
+  // The packer decodes to: var links = { hls4:"...", hls3:"...", hls2:"..." };
+  // The jwplayer setup uses links.hls4 || links.hls3 || links.hls2.
+  // hls2 is typically the canonical CDN master.m3u8 URL with full query
+  // string (signed token). hls3 is a master.txt (fake extension) on a
+  // different CDN. hls4 is a relative /stream/... URL on the embed host.
+  const linksBlockMatch = haystack.match(/var\s+links\s*=\s*\{([^}]+)\}/);
+  const linksBlock = linksBlockMatch ? linksBlockMatch[1] : haystack;
+
+  // Pick out each hlsN key. Order matters: hls2 (full CDN URL) preferred.
+  const pickLink = (key: string): string | null => {
+    const re = new RegExp(`${key}\\s*:\\s*["']([^"']+)["']`);
+    const m = linksBlock.match(re);
+    return m ? m[1] : null;
+  };
+
+  const candidates = [
+    { key: "hls2", label: "HLS · CDN" },
+    { key: "hls3", label: "HLS · alt CDN" },
+    { key: "hls4", label: "HLS · stream" },
+  ];
+  for (const c of candidates) {
+    const raw = pickLink(c.key);
+    if (!raw) continue;
+    let u = raw;
+    if (u.startsWith("//")) u = "https:" + u;
+    else if (u.startsWith("/")) u = new URL(finalUrl).origin + u;
+    if (!/^https?:/.test(u)) {
+      const a = abs(u, finalUrl);
+      if (!a) continue;
+      u = a;
+    }
+    if (seen.has(u)) continue;
+    seen.add(u);
+    // Some morencius pages use master.txt (HLS playlist with .txt extension
+    // to evade ad-blockers). Treat any hlsN URL as m3u8 since the player
+    // uses type:"hls".
+    sources.push({
+      url: u,
+      type: "m3u8",
+      ext: "m3u8",
+      label: c.label,
+      quality: "HLS",
+    });
+  }
+
+  // Fallback: also pick up bare file:"..." assignments in the decoded JS
+  // (covers older packer variants).
+  if (!sources.length) {
+    const fileRe = /file\s*:\s*["']([^"']+)["']/g;
+    let m: RegExpExecArray | null;
+    while ((m = fileRe.exec(haystack)) !== null) {
+      const u = m[1];
+      if (!isMediaish(u) && !/\.txt(\?|$)/i.test(u)) continue;
+      const a = abs(u, finalUrl);
+      if (!a || seen.has(a)) continue;
+      seen.add(a);
+      sources.push({
+        url: a,
+        type: "m3u8",
+        ext: "m3u8",
+        label: "HLS",
+        quality: "HLS",
+      });
+    }
+  }
+
+  return sources.length ? sources : null;
+}
+
+/* ------------------------------------------------------------------ */
+/* Site: DoodStream clones (playmogo.com, and other white-labels that  */
+/*   use i.doodcdn.io assets). These pages are protected by Cloudflare  */
+/*   Turnstile (on /e/{filecode}) and Google reCAPTCHA (on /download/), */
+/*   so we CANNOT extract the MP4 URL server-side. The extractor        */
+/*   returns iframe-type sources pointing to the watch and download      */
+/*   pages so the user can open them in a new tab and solve the captcha  */
+/*   interactively.                                                     */
+/* ------------------------------------------------------------------ */
+function extractDoodstreamClone(html: string, finalUrl: string): VideoSource[] | null {
+  // Detect doodstream-clone pattern: i.doodcdn.io asset reference + /d/ or /e/ URL.
+  const isDoodCloneHtml =
+    html.includes("doodcdn.io") ||
+    /\/dood\?op=/.test(html) ||
+    /DoodStream\.com/i.test(html);
+  if (!isDoodCloneHtml) return null;
+
+  // Parse filecode from URL (/d/{filecode} or /e/{filecode} or /f/{filecode}).
+  const fcMatch = finalUrl.match(/\/[def]\/([^/?#]+)/);
+  if (!fcMatch) return null;
+  const filecode = fcMatch[1];
+
+  let origin: string;
+  try {
+    origin = new URL(finalUrl).origin;
+  } catch {
+    return null;
+  }
+
+  // Extract any one-time /download/{token1}/n/{token2} link from the page
+  // (only present on /d/ pages). We surface it as a fallback "direct token"
+  // source — but since it requires a captcha-validated POST, we still point
+  // users at the /d/ page rather than relying on this token.
+  const sources: VideoSource[] = [];
+
+  // Primary: open the watch embed page (user solves Turnstile, then watches).
+  sources.push({
+    url: `${origin}/e/${filecode}`,
+    type: "iframe",
+    ext: "html",
+    label: "Open watch page · captcha required",
+    quality: "Watch",
+    pageUrl: finalUrl,
+  });
+
+  // Secondary: open the download page (user solves reCAPTCHA, then downloads).
+  sources.push({
+    url: `${origin}/d/${filecode}`,
+    type: "iframe",
+    ext: "html",
+    label: "Open download page · captcha required",
+    quality: "Download",
+    pageUrl: finalUrl,
+  });
+
+  return sources.length ? sources : null;
+}
+
 /** Detect StreamTape and its many mirror/clone domains. StreamTape clones
  *  share the identical page structure (decoy #ideoooolink/#captchalink/
  *  #norobotlink divs + a JS literal with the real &expires=&ip=&token=
@@ -734,6 +875,29 @@ export async function trySiteExtractor(
     } else if (host.includes("doodstream") || host.includes("dood.so") || host.includes("dood.")) {
       sources = await extractDoodstream(html, finalUrl);
     } else if (
+      // Morencius / VidHide embed hosts. Many white-label front-ends
+      // (minochinos.com, etc.) iframe to these — when the user pastes the
+      // embed URL directly, dispatch here. When the user pastes the front-end
+      // URL, the content-based fallback below catches it via the packer.
+      host.includes("morencius") || host.includes("vidhide") ||
+      host.includes("minochinos") || host.includes("playmogo") ||
+      host.includes("mosevura") || host.includes("dramiyos") ||
+      host.includes("earnvids")
+    ) {
+      // DoodStream clone (playmogo.com, etc.) — detect via HTML content.
+      if (
+        host.includes("playmogo") ||
+        html.includes("doodcdn.io") ||
+        /\/dood\?op=/.test(html) ||
+        /DoodStream\.com/i.test(html)
+      ) {
+        sources = extractDoodstreamClone(html, finalUrl);
+      }
+      // Morencius / VidHide pattern: packer → var links = {hls4,hls3,hls2}.
+      if (!sources) {
+        sources = extractMorenciusFamily(html, finalUrl);
+      }
+    } else if (
       host.includes("streamwish") || host.includes("swhoi") ||
       host.includes("filelions") || host.includes("filelion") ||
       host.includes("streamwish.") || host.includes("embedwish")
@@ -741,6 +905,28 @@ export async function trySiteExtractor(
       sources = extractStreamwishFamily(html, finalUrl);
     } else if (host.includes("filemoon") || host.includes("moonq")) {
       sources = extractFilemoon(html, finalUrl);
+    }
+    // Content-based fallbacks: even when the host is unknown, detect known
+    // page structures. This auto-detects new mirror domains and white-labels.
+    if (!sources) {
+      // Morencius / VidHide embed pattern: packer → var links = {hls4,hls3,hls2}
+      // Used by minochinos.com (which embeds morencius.com) and many other
+      // "front" pages that iframe to a morencius/vidhide host.
+      const decoded = decodePacker(html);
+      if (decoded && /var\s+links\s*=\s*\{[^}]*hls[234]/.test(decoded)) {
+        sources = extractMorenciusFamily(html, finalUrl);
+      }
+    }
+    if (!sources) {
+      // DoodStream clone pattern: i.doodcdn.io asset reference + /d/ or /e/ URL.
+      // Returns iframe-type sources (open in new tab — captcha required).
+      if (
+        html.includes("doodcdn.io") ||
+        /\/dood\?op=/.test(html) ||
+        /DoodStream\.com/i.test(html)
+      ) {
+        sources = extractDoodstreamClone(html, finalUrl);
+      }
     }
     // Content-based fallback: if no host matched but the page looks like a
     // StreamTape clone (signature ideoooolink div + JS get_video literal),
