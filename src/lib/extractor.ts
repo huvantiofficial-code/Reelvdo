@@ -348,6 +348,13 @@ export async function extract(rawUrl: string): Promise<ExtractResult> {
   if (siteSources && siteSources.length) {
     sources.push(...siteSources);
   }
+  // When a site extractor returned authoritative sources, skip the generic
+  // raw-HTML media-URL scan. The generic scan reliably produces false
+  // positives on video-hosting pages (e.g. StreamTape's <meta og:url>
+  // canonical link "https://streamtape.com/v/{id}/{slug}.mp4" looks like a
+  // direct video file to the regex but is actually a watch page). The site
+  // extractor is the source of truth for known hosts.
+  const trustSiteSources = !!(siteSources && siteSources.length);
 
   // 0b. Decode any eval packer and scan the decoded JS too.
   const packed = decodePacker(html);
@@ -374,34 +381,41 @@ export async function extract(rawUrl: string): Promise<ExtractResult> {
   }
 
   // 1. <video> / <source> tags
-  $("video source, video").each((_, el) => {
-    const src = $(el).attr("src") || $(el).attr("data-src");
-    if (src) {
-      const abs = resolveUrl(src, finalUrl);
-      if (abs) {
-        const t = classify(abs);
-        if (t !== "unknown")
-          sources.push({ url: abs, type: t, ext: extOf(abs), label: t.toUpperCase() });
-      }
-    }
-  });
-
-  // 2. data-* attributes that often hold stream URLs
-  $("[data-video],[data-src],[data-hls],[data-source]").each((_, el) => {
-    const vals = [$(el).attr("data-video"), $(el).attr("data-hls"), $(el).attr("data-source")];
-    for (const v of vals) {
-      if (v && /^https?:/.test(v)) {
-        const abs = resolveUrl(v, finalUrl);
+  if (!trustSiteSources) {
+    $("video source, video").each((_, el) => {
+      const src = $(el).attr("src") || $(el).attr("data-src");
+      if (src) {
+        const abs = resolveUrl(src, finalUrl);
         if (abs) {
           const t = classify(abs);
-          if (t !== "unknown" && t !== "image")
+          if (t !== "unknown")
             sources.push({ url: abs, type: t, ext: extOf(abs), label: t.toUpperCase() });
         }
       }
-    }
-  });
+    });
+  }
 
-  // 3. <iframe> — fetch first-party iframes and recurse (depth-limited)
+  // 2. data-* attributes that often hold stream URLs
+  if (!trustSiteSources) {
+    $("[data-video],[data-src],[data-hls],[data-source]").each((_, el) => {
+      const vals = [$(el).attr("data-video"), $(el).attr("data-hls"), $(el).attr("data-source")];
+      for (const v of vals) {
+        if (v && /^https?:/.test(v)) {
+          const abs = resolveUrl(v, finalUrl);
+          if (abs) {
+            const t = classify(abs);
+            if (t !== "unknown" && t !== "image")
+              sources.push({ url: abs, type: t, ext: extOf(abs), label: t.toUpperCase() });
+          }
+        }
+      }
+    });
+  }
+
+  // 3. <iframe> — collect for recursion (depth-limited). Still collected even
+  //    when we trust site sources, because MixDrop's /f/ page embeds an /e/
+  //    iframe that the site extractor fetches itself; but for other sites the
+  //    iframe may point to a different embed host with its own sources.
   const iframes: string[] = [];
   $("iframe").each((_, el) => {
     const src = $(el).attr("src");
@@ -411,47 +425,56 @@ export async function extract(rawUrl: string): Promise<ExtractResult> {
     }
   });
 
-  // 4. Scan raw HTML + inline scripts for media URLs
-  const decoded = decodeObfuscated(html);
-  const scanned = [...scanForMediaUrls(decoded), ...extractFromJsonPatterns(decoded)];
-  for (const u of scanned) {
-    const abs = resolveUrl(u, finalUrl) || u;
-    const t = classify(abs);
-    if (t !== "unknown" && t !== "image") {
-      sources.push({ url: abs, type: t, ext: extOf(abs), label: t.toUpperCase() });
+  // 4. Scan raw HTML + inline scripts for media URLs. SKIPPED when a site
+  //    extractor already returned authoritative sources — the generic regex
+  //    matches watch-page URLs that happen to end in .mp4 (e.g. StreamTape's
+  //    og:url canonical link) and produces false positives.
+  if (!trustSiteSources) {
+    const decoded = decodeObfuscated(html);
+    const scanned = [...scanForMediaUrls(decoded), ...extractFromJsonPatterns(decoded)];
+    for (const u of scanned) {
+      const abs = resolveUrl(u, finalUrl) || u;
+      const t = classify(abs);
+      if (t !== "unknown" && t !== "image") {
+        sources.push({ url: abs, type: t, ext: extOf(abs), label: t.toUpperCase() });
+      }
     }
   }
 
   // 5. Recurse into same-host iframes (1 level) to catch embedded players.
-  const iframeHost = safeHost(finalUrl);
-  for (const iframeUrl of iframes.slice(0, 4)) {
-    const ih = safeHost(iframeUrl);
-    // Only recurse into iframes that are same-ish host or known embed hosts.
-    if (ih && (ih === iframeHost || /embed|player|video|stream|cdn|play/i.test(ih))) {
-      try {
-        const r = await fetchText(iframeUrl);
-        const ifDecoded = decodeObfuscated(r.text);
-        const ifScanned = [...scanForMediaUrls(ifDecoded), ...extractFromJsonPatterns(ifDecoded)];
-        const $if = load(r.text);
-        $if("video source, video").each((_, el) => {
-          const s = $if(el).attr("src");
-          if (s) {
-            const abs = resolveUrl(s, r.finalUrl);
-            if (abs) {
-              const t = classify(abs);
-              if (t !== "unknown" && t !== "image")
-                sources.push({ url: abs, type: t, ext: extOf(abs), label: t.toUpperCase() });
+  //    SKIPPED when a site extractor already returned authoritative sources
+  //    (the extractor handles its own embed-fetching, e.g. MixDrop /f/ -> /e/).
+  if (!trustSiteSources) {
+    const iframeHost = safeHost(finalUrl);
+    for (const iframeUrl of iframes.slice(0, 4)) {
+      const ih = safeHost(iframeUrl);
+      // Only recurse into iframes that are same-ish host or known embed hosts.
+      if (ih && (ih === iframeHost || /embed|player|video|stream|cdn|play/i.test(ih))) {
+        try {
+          const r = await fetchText(iframeUrl);
+          const ifDecoded = decodeObfuscated(r.text);
+          const ifScanned = [...scanForMediaUrls(ifDecoded), ...extractFromJsonPatterns(ifDecoded)];
+          const $if = load(r.text);
+          $if("video source, video").each((_, el) => {
+            const s = $if(el).attr("src");
+            if (s) {
+              const abs = resolveUrl(s, r.finalUrl);
+              if (abs) {
+                const t = classify(abs);
+                if (t !== "unknown" && t !== "image")
+                  sources.push({ url: abs, type: t, ext: extOf(abs), label: t.toUpperCase() });
+              }
             }
+          });
+          for (const u of ifScanned) {
+            const abs = resolveUrl(u, r.finalUrl) || u;
+            const t = classify(abs);
+            if (t !== "unknown" && t !== "image")
+              sources.push({ url: abs, type: t, ext: extOf(abs), label: t.toUpperCase() });
           }
-        });
-        for (const u of ifScanned) {
-          const abs = resolveUrl(u, r.finalUrl) || u;
-          const t = classify(abs);
-          if (t !== "unknown" && t !== "image")
-            sources.push({ url: abs, type: t, ext: extOf(abs), label: t.toUpperCase() });
+        } catch {
+          // ignore iframe failures
         }
-      } catch {
-        // ignore iframe failures
       }
     }
   }

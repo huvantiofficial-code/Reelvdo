@@ -688,3 +688,55 @@ Unresolved / Risks:
 - The JS obfuscation pattern may change again. The extractor's regex is somewhat resilient (it matches any quoted string with `&expires=X&ip=Y&token=Z`), but a future change could break it. The fallback to the static HTML regex is a safety net (though static tokens are decoys on modern streamtape).
 - The `&stream=1` requirement was empirically determined. Streamtape could change this (e.g., require `&download=1` instead, or add a new param). The extractor would need updating.
 - On Vercel (serverless), the `curl` binary is unavailable, so the `fetchStreamFallback` is used. This should still work for streamtape (no Cloudflare bot protection on `get_video`), but the redirect-chain handling relies on `fetch`'s built-in `redirect: "follow"` (which works correctly). The soft-403 detection and refresh logic are server-side and work the same.
+
+---
+
+## Phase G — StreamTape Clone (tpead.net) + MixDrop CDN Resilience (2026-07-28)
+
+**Task ID**: G-1
+**Agent**: main (Z.ai Code)
+**Task**: Fix preview/watch + download for `https://tpead.net/v/AQ3rVGjmWbTX70M/merged_video_35.mp4` (StreamTape clone) and `https://miiiixdrop.net/f/r6wdzw9qse8r7d` (MixDrop clone).
+
+### Root Cause Analysis
+
+**tpead.net (StreamTape clone)** — extraction completely broken:
+- `tpead.net` is a mirror of `streamtape.com` with an identical page structure (decoy `#ideoooolink`/`#captchalink`/`#norobotlink` divs + a JS string literal with the real `&expires=&ip=&token=` triple that gets `.substring()`'d at runtime).
+- The existing `extractStreamtape()` function had the correct logic but was **never invoked** because `trySiteExtractor()` only matched `host.includes("streamtape")` — `tpead.net` does not contain that substring.
+- As a result, only the generic scan ran, which picked up the page's `<meta og:url content="https://streamtape.com/v/.../merged_video_35.mp4">` canonical link as a **false-positive video source** (it ends in `.mp4` but is actually a watch page URL, not a direct video file). Preview/download of that URL returned the HTML watch page, not video bytes.
+
+**miiiixdrop.net (MixDrop clone)** — extraction already worked, but CDN playback failed intermittently:
+- `extractMixdrop()` correctly fetches the `/e/{id}` embed page, decodes the dean-edwards-style packer, and extracts `MDCore.wurl` → `https://gfve4dog1.mxcontent.net/v2/{id}.mp4?s=...&e=...&_t=...`.
+- The MixDrop CDN `mxcontent.net` intermittently returns **HTTP 403** due to per-IP rate-limiting (especially under the browser video element's rapid multi-range-request access pattern). The proxy's old single-shot 403-refresh was insufficient — after one refresh the CDN would often still 403, and the proxy gave up.
+
+### Work Log
+
+- Fetched and analyzed the raw HTML of both pages via `curl` to confirm the embed patterns.
+- Verified the existing `extractStreamtape()` regex `/['"][^'"]*?&expires=([^'"&<>\s]+)&ip=([^'"&<>\s]+)&token=([^'"&<>\s]+)['"]/i` correctly extracts the **real** token (`pchPL-0dzLKX`) from the JS literal and rejects the decoy divs (`pchPL-0dzLzZ`).
+- Verified the built `get_video?id=...&stream=1` URL returns 302 → `tapecontent.net` CDN with `Access-Control-Allow-Origin: *`, `Content-Length: 35664970`, range support, `Content-Type: video/mp4`.
+- **`src/lib/site-extractors.ts`**:
+  - Added `isStreamtapeFamily(host)` helper matching known StreamTape clone domains: `streamtape*`, `tpead.net`, `*.tpead.net`, `stape.*`, `stpe.net`, `streamta.pe`, `tapeplayers*`.
+  - Added `looksLikeStreamtapePage(html)` content-based fallback: if no host matched but the HTML contains the signature `ideoooolink` div + a JS-quoted `get_video?id=...&token=...` literal, treat it as a StreamTape clone. This auto-detects future mirror domains.
+  - Added `mixdroop` to the MixDrop host match (defensive).
+  - Wired both into `trySiteExtractor()` dispatch; the content fallback runs after the host chain so unknown StreamTape clones are caught.
+- **`src/lib/extractor.ts`**:
+  - Added `trustSiteSources` flag: when a site extractor returns authoritative sources, **skip** the generic raw-HTML media-URL scan, `<video>`/`<source>` tag scan, `data-*` attribute scan, and same-host iframe recursion. This eliminates the `og:url` false-positive source (`https://streamtape.com/v/.../merged_video_35.mp4`) that the generic regex was picking up. The site extractor is the source of truth for known hosts.
+- **`src/app/api/proxy/route.ts`**:
+  - Refactored the 403/401/soft-block retry into a single loop with up to **2 token-refresh retries** and a **400 ms backoff** between attempts. The old code did a single refresh; the new loop re-extracts a fresh token on each blocked response and retries, letting the CDN's per-IP rate-limit window clear. This fixed MixDrop playback (3/3 sequential range requests now return 206, previously 1/3 succeeded).
+
+### Verification Results
+
+- **tpead.net extraction**: returns a single clean source `https://tpead.net/get_video?id=AQ3rVGjmWbTX70M&expires=...&ip=...&token=...&stream=1` with `label: "MP4 · merged_video_35.mp4"`, `filename: "merged_video_35.mp4"`, `pageUrl` set. The false-positive `streamtape.com` og:url source is gone.
+- **tpead.net preview (browser)**: video plays — `readyState: 4`, `duration: 334.376s`, `currentTime: 3.69s`, `paused: false`, `error: null`.
+- **tpead.net download**: HTTP 206, `Content-Disposition: attachment`, valid MP4 (`ftypisom` header), range/seek support (206 Partial Content).
+- **miiiixdrop.net extraction**: returns `https://gfve4dog1.mxcontent.net/v2/r6wdzw9qse8r7d.mp4?s=...&e=...&_t=...`, `pageUrl: https://miiiixdrop.net/f/r6wdzw9qse8r7d`.
+- **miiiixdrop.net preview (browser)**: video plays — `readyState: 4`, `duration: 9422.83s` (2h37m), `currentTime: 4.16s`, `paused: false`, `error: null`.
+- **miiiixdrop.net download**: HTTP 206, `Content-Disposition: attachment; filename="d942095f-...mp4"`, valid MP4 (`ftypisom`), `Content-Length: 1460674095` (1.36 GB).
+- **Lint**: 0 errors / 0 warnings.
+- **dev.log**: no runtime errors during browser verification.
+
+### Stage Summary
+
+- tpead.net (StreamTape clone): **FIXED** — extraction, preview, and download all work. The fix also auto-detects future StreamTape mirror domains via content-based fallback.
+- miiiixdrop.net (MixDrop clone): **FIXED** — extraction was already correct; the proxy retry-with-backoff resolved the intermittent CDN 403 rate-limiting. Both preview and download now work reliably.
+- The `trustSiteSources` change also improves all other known-site extractions by eliminating generic-scan false positives.
+- Files modified: `src/lib/site-extractors.ts`, `src/lib/extractor.ts`, `src/app/api/proxy/route.ts`.

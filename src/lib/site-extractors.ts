@@ -677,6 +677,37 @@ function extractFilemoon(html: string, finalUrl: string): VideoSource[] | null {
   return sources.length ? sources : null;
 }
 
+/** Detect StreamTape and its many mirror/clone domains. StreamTape clones
+ *  share the identical page structure (decoy #ideoooolink/#captchalink/
+ *  #norobotlink divs + a JS literal with the real &expires=&ip=&token=
+ *  triple that gets .substring()'d at runtime), so the same extractor works
+ *  for all of them. Known clones: streamtape.com, tpead.net, streamtape.to,
+ *  stape.cc, streamta.pe, stpe.net, tapeplayers.net, etc. */
+function isStreamtapeFamily(host: string): boolean {
+  const h = host.toLowerCase();
+  return (
+    h.includes("streamtape") ||
+    h === "tpead.net" ||
+    h.endsWith(".tpead.net") ||
+    h.includes("stape.") ||
+    h === "stpe.net" ||
+    h.endsWith(".stpe.net") ||
+    h.includes("streamta.pe") ||
+    h.includes("tapeplayers")
+  );
+}
+
+/** Content-based fallback: even when the host is unknown, if the page HTML
+ *  contains StreamTape's signature markers (the #ideoooolink div AND a
+ *  get_video?id=...&token=... pattern inside a JS string literal), treat it
+ *  as a StreamTape clone. This auto-detects new mirror domains. */
+function looksLikeStreamtapePage(html: string): boolean {
+  return (
+    html.includes("ideoooolink") &&
+    /['"][^'"]*get_video\?id=[^'"]*&expires=[^'"]*&ip=[^'"]*&token=[^'"]*['"]/i.test(html)
+  );
+}
+
 /** Host-based dispatch. Returns sources or null to fall back to generic. */
 export async function trySiteExtractor(
   html: string,
@@ -696,9 +727,9 @@ export async function trySiteExtractor(
     } else if (host.includes("odysseusa")) {
       const fc = finalUrl.match(/\/e\/([^/?#]+)/);
       if (fc) sources = await extractOdysseusa(fc[1], new URL(finalUrl).origin, finalUrl);
-    } else if (host.includes("mixdrop") || host.includes("miiiixdrop")) {
+    } else if (host.includes("mixdrop") || host.includes("miiiixdrop") || host.includes("mixdroop")) {
       sources = await extractMixdrop(html, finalUrl);
-    } else if (host.includes("streamtape")) {
+    } else if (isStreamtapeFamily(host)) {
       sources = extractStreamtape(html, finalUrl);
     } else if (host.includes("doodstream") || host.includes("dood.so") || host.includes("dood.")) {
       sources = await extractDoodstream(html, finalUrl);
@@ -710,6 +741,12 @@ export async function trySiteExtractor(
       sources = extractStreamwishFamily(html, finalUrl);
     } else if (host.includes("filemoon") || host.includes("moonq")) {
       sources = extractFilemoon(html, finalUrl);
+    }
+    // Content-based fallback: if no host matched but the page looks like a
+    // StreamTape clone (signature ideoooolink div + JS get_video literal),
+    // run the StreamTape extractor. This auto-detects new mirror domains.
+    if (!sources && looksLikeStreamtapePage(html)) {
+      sources = extractStreamtape(html, finalUrl);
     }
   } catch {
     return null;

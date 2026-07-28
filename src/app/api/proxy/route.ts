@@ -100,71 +100,55 @@ export async function GET(req: NextRequest) {
   const range = req.headers.get("range");
   const referer = refererFromPage(page);
 
-  let result;
-  try {
-    result = await streamUrl(target, range, referer);
-  } catch (e) {
-    // If the fetch itself threw and we have a refresh page, try once.
-    if (page) {
-      const fresh = await refreshSourceUrl(page, "mp4");
-      if (fresh && fresh.url !== target) {
-        target = fresh.url;
-        try {
-          targetUrl = new URL(target);
-          result = await streamUrl(target, range, referer);
-        } catch {
-          return new Response(
-            JSON.stringify({ error: "Upstream fetch failed", detail: e instanceof Error ? e.message : "" }),
-            { status: 502, headers: { "content-type": "application/json", ...corsHeaders() } }
-          );
+  // Fetch with up to 2 token-refresh retries. Many video CDNs (MixDrop's
+  // mxcontent.net, StreamTape's get_video endpoint) intermittently return 403
+  // due to per-IP rate-limiting or single-use tokens. On each 403/401 (or a
+  // soft-block 200+text/html), re-extract a fresh token from the page URL and
+  // retry, with a short backoff so the rate-limit window can clear.
+  let result: { status: number; headers: Record<string, string>; body: ReadableStream<Uint8Array> } | undefined;
+  const MAX_REFRESH_ATTEMPTS = 2;
+  for (let attempt = 0; attempt <= MAX_REFRESH_ATTEMPTS; attempt++) {
+    try {
+      result = await streamUrl(target, range, referer);
+    } catch (e) {
+      // Network-level failure (curl crashed, DNS, timeout). Try a refresh on
+      // the next loop iteration if we still have attempts left and have a page.
+      if (attempt < MAX_REFRESH_ATTEMPTS && page) {
+        const fresh = await refreshSourceUrl(page, "mp4");
+        if (fresh && fresh.url !== target) {
+          target = fresh.url;
+          try { targetUrl = new URL(target); } catch { /* keep */ }
+          await new Promise((r) => setTimeout(r, 400));
+          continue;
         }
       }
-    }
-    if (!result) {
       return new Response(
         JSON.stringify({ error: "Upstream fetch failed", detail: e instanceof Error ? e.message : "" }),
         { status: 502, headers: { "content-type": "application/json", ...corsHeaders() } }
       );
     }
+
+    // Success or non-retryable status → stop.
+    const blocked =
+      result.status === 403 || result.status === 401 ||
+      isSoftBlocked(target, result.status, result.headers);
+    if (!blocked || !page || attempt >= MAX_REFRESH_ATTEMPTS) break;
+
+    // Cancel the blocked body and refresh the token.
+    try { result.body.cancel?.(); } catch { /* ignore */ }
+    const fresh = await refreshSourceUrl(page, "mp4");
+    if (!fresh || fresh.url === target) break; // no fresh token available
+    target = fresh.url;
+    try { targetUrl = new URL(target); } catch { /* keep */ }
+    // Brief backoff to let per-IP rate-limit windows clear.
+    await new Promise((r) => setTimeout(r, 400));
   }
 
-  // If the CDN rejected the token with a hard 403/401, refresh and retry.
-  if ((result.status === 403 || result.status === 401) && page) {
-    try {
-      result.body.cancel?.();
-    } catch {
-      // ignore
-    }
-    const fresh = await refreshSourceUrl(page, "mp4");
-    if (fresh && fresh.url !== target) {
-      target = fresh.url;
-      try {
-        targetUrl = new URL(target);
-        result = await streamUrl(target, range, referer);
-      } catch {
-        // keep original failure
-      }
-    }
-  }
-
-  // Detect "soft 403": HTTP 200 + text/html body for a video URL (streamtape's
-  // rate-limited token response). Refresh the token and retry once.
-  if (isSoftBlocked(target, result.status, result.headers) && page) {
-    try {
-      result.body.cancel?.();
-    } catch {
-      // ignore
-    }
-    const fresh = await refreshSourceUrl(page, "mp4");
-    if (fresh && fresh.url !== target) {
-      target = fresh.url;
-      try {
-        targetUrl = new URL(target);
-        result = await streamUrl(target, range, referer);
-      } catch {
-        // keep original failure
-      }
-    }
+  if (!result) {
+    return new Response(
+      JSON.stringify({ error: "Upstream fetch failed" }),
+      { status: 502, headers: { "content-type": "application/json", ...corsHeaders() } }
+    );
   }
 
   const respHeaders = new Headers(corsHeaders());
