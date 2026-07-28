@@ -60,6 +60,19 @@ function formatDuration(ms: number): string {
 }
 
 function basenameFor(src: VideoSource): string {
+  // Prefer the original filename (e.g. streamtape's slug from /v/{id}/{slug.mp4}).
+  // This preserves the user-visible "original file" name on save instead of a
+  // generic label-derived name like "mp4_2_5363822546728819944_mp4.mp4".
+  if (src.filename) {
+    const cleaned = src.filename.replace(/[\\/:*?"<>|]/g, "_").trim();
+    if (cleaned) {
+      // If the original filename already has an extension, use it as-is.
+      // Otherwise, append the detected extension.
+      const hasExt = /\.[a-z0-9]{2,5}$/i.test(cleaned);
+      if (hasExt) return cleaned;
+      return `${cleaned}.${src.ext || "mp4"}`;
+    }
+  }
   const base = (src.label || src.quality || "video")
     .toString()
     .replace(/[^a-z0-9]+/gi, "_")
@@ -112,10 +125,6 @@ export function DownloadProgressDialog({
   // Start the download when a source arrives.
   useEffect(() => {
     if (!open || !source) return;
-    // HLS/DASH go through /api/stream (server concatenates segments); mp4/ts
-    // go through /api/proxy?download=1. Either way we read the response as a
-    // stream and report progress.
-    const url = downloadUrlFor(source);
     const filename = basenameFor(source);
     const controller = new AbortController();
     abortRef.current = controller;
@@ -175,6 +184,49 @@ export function DownloadProgressDialog({
 
     (async () => {
       try {
+        // Refresh the source URL before downloading. This ensures we have a
+        // fresh, unused token — critical for sites like streamtape that
+        // rate-limit tokens (e.g., after the user watched the preview, the
+        // original token may be exhausted). For HLS/DASH we keep the original
+        // URL (refreshing the master playlist is expensive and rarely needed).
+        let effectiveSource: VideoSource = source;
+        if (
+          source.pageUrl &&
+          source.type !== "m3u8" &&
+          source.type !== "mpd"
+        ) {
+          try {
+            const refreshResp = await fetch("/api/refresh", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                url: source.pageUrl,
+                preferType: source.type,
+              }),
+              signal: controller.signal,
+            });
+            if (refreshResp.ok) {
+              const data = (await refreshResp.json()) as {
+                ok: boolean;
+                source?: { url: string; type: string; filename?: string };
+              };
+              if (data.ok && data.source?.url) {
+                effectiveSource = {
+                  ...source,
+                  url: data.source.url,
+                  filename: data.source.filename || source.filename,
+                };
+              }
+            }
+          } catch {
+            // Refresh failed (abort, network, etc.) — fall back to original.
+          }
+        }
+
+        // HLS/DASH go through /api/stream (server concatenates segments);
+        // mp4/ts go through /api/proxy?download=1. Either way we read the
+        // response as a stream and report progress.
+        const url = downloadUrlFor(effectiveSource);
         const res = await fetch(url, {
           signal: controller.signal,
           // Don't follow redirects automatically — curl-side already does.

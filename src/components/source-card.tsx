@@ -70,16 +70,42 @@ function TypeIcon({ type, className }: { type: MediaType; className?: string }) 
 }
 
 export function downloadUrlFor(src: VideoSource): string {
+  const pageParam = src.pageUrl ? `&page=${encodeURIComponent(src.pageUrl)}` : "";
+
+  // Prefer the original filename (e.g. streamtape's slug from /v/{id}/{slug.mp4}).
+  // This preserves the user-visible "original file" name on download instead of
+  // a generic label like "mp4.mp4".
+  let originalName: string | undefined;
+  if (src.filename) {
+    // Sanitize but keep the original extension / unicode chars where possible.
+    const cleaned = src.filename.replace(/[\\/:*?"<>|]/g, "_").trim();
+    if (cleaned) originalName = cleaned;
+  }
+
+  if (src.type === "m3u8" || src.type === "mpd") {
+    const fallback = (src.label || src.quality || "video")
+      .toString()
+      .replace(/[^a-z0-9]+/gi, "_")
+      .replace(/^_+|_+$/g, "")
+      .toLowerCase();
+    const name = originalName || fallback || "video";
+    return `/api/stream?url=${encodeURIComponent(src.url)}&name=${encodeURIComponent(name)}${pageParam}`;
+  }
+
+  const ext = src.ext || "mp4";
+  if (originalName) {
+    // If the original filename already has an extension, use it as-is.
+    // Otherwise, append the detected extension.
+    const hasExt = /\.[a-z0-9]{2,5}$/i.test(originalName);
+    const name = hasExt ? originalName : `${originalName}.${ext}`;
+    return `/api/proxy?url=${encodeURIComponent(src.url)}&download=1&name=${encodeURIComponent(name)}${pageParam}`;
+  }
+
   const baseName = (src.label || src.quality || "video")
     .toString()
     .replace(/[^a-z0-9]+/gi, "_")
     .replace(/^_+|_+$/g, "")
     .toLowerCase();
-  const pageParam = src.pageUrl ? `&page=${encodeURIComponent(src.pageUrl)}` : "";
-  if (src.type === "m3u8" || src.type === "mpd") {
-    return `/api/stream?url=${encodeURIComponent(src.url)}&name=${baseName || "video"}${pageParam}`;
-  }
-  const ext = src.ext || "mp4";
   return `/api/proxy?url=${encodeURIComponent(src.url)}&download=1&name=${baseName || "video"}.${ext}${pageParam}`;
 }
 

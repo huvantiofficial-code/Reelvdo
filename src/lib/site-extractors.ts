@@ -420,23 +420,112 @@ async function extractMixdrop(html: string, finalUrl: string): Promise<VideoSour
 
 /* ------------------------------------------------------------------ */
 /* Site: Streamtape (streamtape.com)                                   */
-/* Page has a robotlink/norobotlink div with /get_video?id=...&token=  */
+/* The watch page (/v/{id}/{slug}) puts DECOY tokens in three hidden   */
+/* divs (#ideoooolink, #captchalink, #norobotlink). The REAL token is  */
+/* only revealed at runtime by JS that takes a quoted string literal   */
+/* like 'xcdd<id>&expires=..&ip=..&token=..' and runs .substring(N)    */
+/* to strip a variable-length obfuscation prefix before assigning it   */
+/* back to the div's innerHTML. The static HTML tokens are decoys and  */
+/* the CDN returns 403 "Access Denied" if you use them.                */
+/*                                                                     */
+/* The player then loads `<div_content>&stream=1` which 302-redirects  */
+/* to a CDN MP4 on tapecontent.net with CORS + range support.          */
 /* ------------------------------------------------------------------ */
 function extractStreamtape(html: string, finalUrl: string): VideoSource[] | null {
-  // The div content looks like: /streamtape.com/get_video?id=XXX&expires=..&ip=..&token=..
-  // JS builds "https:" + content. We reconstruct the canonical URL.
-  const m = html.match(/get_video\?id=[^"'<\s]+&expires=[^"'<\s]+&ip=[^"'<\s]+&token=[^"'<\s]+/i);
-  if (!m) return null;
-  const path = m[0];
-  // Origin is https://streamtape.com (or the mirror's host).
   let origin = "https://streamtape.com";
   try {
     origin = new URL(finalUrl).origin;
   } catch {
     // keep default
   }
-  const u = `${origin}/${path}`;
-  return [{ url: u, type: "mp4", ext: "mp4", label: "MP4" }];
+
+  // Extract the video ID and original filename from the page URL.
+  // URL pattern: /v/{id}/{slug.mp4}
+  let videoId: string | null = null;
+  let filename: string | null = null;
+  try {
+    const u = new URL(finalUrl);
+    const parts = u.pathname.split("/").filter(Boolean);
+    // parts: ["v", "{id}", "{slug}"]
+    if (parts.length >= 2 && parts[0] === "v") {
+      videoId = parts[1];
+    }
+    if (parts.length >= 3 && parts[0] === "v") {
+      // Slug is the original filename (URL-decoded).
+      filename = decodeURIComponent(parts[2]);
+    }
+  } catch {
+    // ignore
+  }
+
+  // STRATEGY 1 (preferred): find a JS string literal containing the real
+  // &expires=X&ip=Y&token=Z triple. The static HTML decoys are NOT inside
+  // quotes (they're between `>` and `</div>`), so requiring `['"]...['"]`
+  // ensures we only match the JS literal with the real token.
+  //
+  // The literal format varies (intentional obfuscation by streamtape):
+  //   'xcdd<id>&expires=..&ip=..&token=..'          (no id=, just the id value)
+  //   'defg=<id>&expires=..&ip=..&token=..'         (= prefix)
+  //   'xcd=<id>&expires=..&ip=..&token=..'          (= prefix)
+  //   'xcddvideo?id=<id>&expires=..&ip=..&token=..' (video?id= prefix)
+  //   'defg_video?id=<id>&expires=..&ip=..'         (_video?id= prefix)
+  //   'xcddeo?id=<id>&expires=..&ip=..'             (deo?id= prefix)
+  //
+  // We don't care about the prefix — we extract expires/ip/token directly
+  // and rebuild the canonical URL using the video ID from the page URL.
+  const reJs = /['"][^'"]*?&expires=([^'"&<>\s]+)&ip=([^'"&<>\s]+)&token=([^'"&<>\s]+)['"]/i;
+  const mJs = html.match(reJs);
+
+  // STRATEGY 2 (fallback): old-style regex for the static HTML divs. These
+  // are DECOYS on modern streamtape, but match in case the page layout
+  // changes back or this is an older mirror.
+  const mStatic = html.match(
+    /get_video\?id=[^"'<\s]+&expires=[^"'<\s]+&ip=[^"'<\s]+&token=[^"'<\s]+/i
+  );
+
+  let url: string;
+  if (mJs) {
+    const expires = mJs[1];
+    const ip = mJs[2];
+    const token = mJs[3];
+    if (!videoId) {
+      // Try to recover the ID from the JS literal. The literal's first group
+      // is `<junk><id>` or `<junk>?id=<id>` or `<junk>=<id>`.
+      const fullLit = mJs[0];
+      const idM = fullLit.match(/[?=]([A-Za-z0-9]{10,})&expires=/);
+      if (idM) videoId = idM[1];
+    }
+    if (!videoId) return null;
+    // &stream=1 makes streamtape 302-redirect to the CDN MP4 (otherwise it
+    // returns 403 "Access Denied" for plain get_video calls). The CDN MP4
+    // is the ORIGINAL uploaded file — no transcoding. Works for both
+    // preview (range support) and download.
+    url = `${origin}/get_video?id=${videoId}&expires=${expires}&ip=${ip}&token=${token}&stream=1`;
+  } else if (mStatic) {
+    // Strip leading "/streamtape.com/" if present, then prepend origin.
+    const path = mStatic[0].replace(/^\/?streamtape\.com\//, "");
+    url = `${origin}/${path}`;
+    // Append &stream=1 for the same reason as above.
+    url += url.includes("?") ? "&stream=1" : "?stream=1";
+  } else {
+    return null;
+  }
+
+  // Derive a clean label including the filename when available.
+  const label = filename
+    ? `MP4 · ${filename}`
+    : "MP4";
+
+  return [
+    {
+      url,
+      type: "mp4",
+      ext: "mp4",
+      label,
+      filename: filename || undefined,
+      pageUrl: finalUrl,
+    },
+  ];
 }
 
 /* ------------------------------------------------------------------ */

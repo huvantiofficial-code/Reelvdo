@@ -173,8 +173,16 @@ function curlStreamViaCurl(
       const idx = buf.indexOf("\r\n\r\n", searchFrom, "latin1");
       if (idx < 0) return null;
       const after = idx + 4;
+      // If we don't yet have at least 5 bytes after the boundary, we can't
+      // tell whether another HTTP response header block is coming (curl -L
+      // following a 302/301/307 redirect) or whether this is the final
+      // response whose body starts immediately. Wait for more data to avoid
+      // mistakenly treating a redirect's response as final and streaming the
+      // next response's HTTP status line as body content (corrupting the
+      // video stream with textual HTTP headers).
+      if (buf.length < after + 5) return null;
       // Is there another header block (redirect) following?
-      if (buf.length >= after + 5 && buf.slice(after, after + 5).toString("latin1") === "HTTP/") {
+      if (buf.slice(after, after + 5).toString("latin1") === "HTTP/") {
         searchFrom = after;
         continue;
       }

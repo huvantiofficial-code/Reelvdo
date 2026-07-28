@@ -41,6 +41,38 @@ function refererFromPage(page: string | null): string | undefined {
   }
 }
 
+/** Detect "soft 403" responses where the upstream returns HTTP 200 with a
+ *  text/html or JSON body (instead of the expected video/audio bytes) because
+ *  the token was rate-limited or invalidated. Streamtape in particular returns
+ *  `{"status":403,"msg":"Access Denied"}` with HTTP 200 + content-type
+ *  text/html when the same token is used too many times. */
+function isSoftBlocked(
+  target: string,
+  status: number,
+  headers: Record<string, string>
+): boolean {
+  if (status < 200 || status >= 300) return false;
+  const ct = (headers["content-type"] || "").toLowerCase();
+  // If the response is text/html or application/json for a URL that should
+  // return video/audio bytes, it's almost certainly a soft-block error page.
+  if (!ct.startsWith("text/html") && !ct.startsWith("application/json")) {
+    return false;
+  }
+  // Only treat as soft-block if the target is a known video endpoint.
+  const t = target.toLowerCase();
+  return (
+    t.includes("get_video") || // streamtape
+    t.includes("/get_video") ||
+    t.endsWith(".mp4") ||
+    t.endsWith(".m4v") ||
+    t.endsWith(".webm") ||
+    t.endsWith(".mkv") ||
+    t.includes(".mp4?") ||
+    t.includes(".m4v?") ||
+    t.includes(".webm?")
+  );
+}
+
 export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
   let target = sp.get("url");
@@ -96,8 +128,28 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // If the CDN rejected the token (403/401), refresh from the page and retry.
+  // If the CDN rejected the token with a hard 403/401, refresh and retry.
   if ((result.status === 403 || result.status === 401) && page) {
+    try {
+      result.body.cancel?.();
+    } catch {
+      // ignore
+    }
+    const fresh = await refreshSourceUrl(page, "mp4");
+    if (fresh && fresh.url !== target) {
+      target = fresh.url;
+      try {
+        targetUrl = new URL(target);
+        result = await streamUrl(target, range, referer);
+      } catch {
+        // keep original failure
+      }
+    }
+  }
+
+  // Detect "soft 403": HTTP 200 + text/html body for a video URL (streamtape's
+  // rate-limited token response). Refresh the token and retry once.
+  if (isSoftBlocked(target, result.status, result.headers) && page) {
     try {
       result.body.cancel?.();
     } catch {

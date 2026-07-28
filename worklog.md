@@ -603,3 +603,88 @@ Unresolved / Risks:
 - The HLS token (gz8gQFsfVjxKLAT6nqnIdQm77dIZ7NOm in the path) may be IP-bound or time-limited. If it expires, the existing refreshSourceUrl mechanism re-runs extractPlaymate to get a fresh token. Verified the refresh path exists but did not trigger an expiry scenario.
 - Playmate could change their API shape (/api/s field names sx/ix/lx) or add additional auth (cookies, signed requests). The extractor will need updating if so.
 - sd1.playmate.to (the /api/download URL) is genuinely NXDOMAIN — not a sandbox issue. The download_url from /api/download is permanently broken. We only use /api/download for duration metadata now.
+
+---
+
+## Task ID: streamtape-fix
+**Agent**: main (Z.ai Code)
+**Task**: Fix streamtape.com — preview watch and download both not working, original file not downloading (https://streamtape.com/v/AwlvvWq6YATXplZ/2_5363822546728819944.mp4)
+
+### Root Cause Analysis
+
+1. **Decoy tokens in static HTML**: Streamtape's watch page (`/v/{id}/{slug}`) contains THREE hidden divs (`#ideoooolink`, `#captchalink`, `#norobotlink`) with `get_video?id=...&token=...` URLs. The tokens in these static divs are **DECOYS** — the CDN returns `{"status":403,"msg":"Access Denied"}` when used. The REAL token is only revealed at runtime by JavaScript that takes a quoted string literal like `'xcdd<id>&expires=..&ip=..&token=..'` and runs `.substring(N)` to strip a variable-length obfuscation prefix before assigning it to the div's `innerHTML`.
+
+2. **Old extractor matched the decoy**: The previous `extractStreamtape` regex `get_video\?id=...&token=...` matched the FIRST occurrence in the static HTML (the decoy token), not the JS literal with the real token. This caused all preview/download requests to fail with 403.
+
+3. **Missing `&stream=1`**: Streamtape's `get_video` endpoint returns 403 "Access Denied" for plain requests. It requires `&stream=1` (for the video player) or `&download=1&name=X` (for download) to 302-redirect to the CDN MP4. The old extractor built the URL without `&stream=1`.
+
+4. **curl-stream redirect-chain bug**: When `get_video?...&stream=1` returns 302 → CDN returns 206, curl's `--dump-header -` outputs both response header blocks. The header-parsing state machine in `curl-stream.ts` had a bug: when it found a `\r\n\r\n` boundary but didn't yet have 5 bytes after it (because the next response chunk hadn't arrived), it incorrectly treated the 302 as the final response and streamed the 206's HTTP status line as body content — corrupting the video stream with textual HTTP headers.
+
+5. **Soft-403 not detected**: Streamtape returns HTTP **200** (not 403) with a `{"status":403,"msg":"Access Denied"}` JSON body when a token is rate-limited. The existing 403-refresh logic only checked `result.status === 403`, so it never triggered for streamtape's soft-403.
+
+6. **Per-token rate limit + Watch-then-Download failure**: Each streamtape token can only be used ~2-3 times before being invalidated. When the user clicks Watch (video player makes multiple Range requests during playback), the token gets exhausted. A subsequent Download with the same token fails. The proxy's soft-403 refresh gets a new token, but by then the IP may also be temporarily rate-limited.
+
+7. **Generic download filename**: The `basenameFor` function in `download-progress-dialog.tsx` used the sanitized source label (e.g., "MP4 · 2_5363822546728819944.mp4" → "mp4_2_5363822546728819944_mp4.mp4") instead of the original filename. The user got "mp4_2_5363822546728819944_mp4.mp4" instead of "2_5363822546728819944.mp4".
+
+### Work Log
+
+#### Fix 1: New `extractStreamtape` (`src/lib/site-extractors.ts`)
+- Added `filename` field to `VideoSource` interface (`src/lib/types.ts`) to carry the original filename from the extractor to the frontend.
+- Rewrote `extractStreamtape` with a two-strategy approach:
+  - **Strategy 1 (preferred)**: Match a JS string literal containing `&expires=X&ip=Y&token=Z` (requires `['"]...['"]` quotes around it). The static HTML decoys are NOT inside quotes (they're between `>` and `</div>`), so this regex only matches the JS literal with the REAL token. The literal format varies (intentional obfuscation: `xcdd<id>`, `defg=<id>`, `xcd=<id>`, `xcddvideo?id=<id>`, etc.) — we extract `expires`/`ip`/`token` directly and ignore the prefix.
+  - **Strategy 2 (fallback)**: Old-style regex for the static HTML divs, in case the page layout changes back or this is an older mirror.
+- Extracts the video ID and original filename from the page URL (`/v/{id}/{slug}`).
+- Builds the canonical URL with `&stream=1` (works for both preview and download — 302-redirects to the CDN MP4 with range support and CORS).
+- Sets `label` to `"MP4 · <filename>"` and `filename` to the original slug.
+
+#### Fix 2: curl-stream redirect-chain state machine (`src/lib/curl-stream.ts`)
+- **Bug**: `tryParseHeaders` found a `\r\n\r\n` boundary, checked `buf.length >= after + 5 && buf.slice(after, after+5) === "HTTP/"`. If `buf.length < after + 5` (not enough bytes after boundary), the condition was false → fell through to "treat as final" → streamed the next response's HTTP status line as body content.
+- **Fix**: Added an explicit `if (buf.length < after + 5) return null;` check BEFORE the `HTTP/` check. If we don't have enough bytes to determine if there's another HTTP block coming (redirect chain via `curl -L`), wait for more data instead of mistakenly treating a redirect's 302 response as final.
+
+#### Fix 3: Soft-403 detection in proxy (`src/app/api/proxy/route.ts`)
+- Added `isSoftBlocked(target, status, headers)` helper that detects "soft 403" responses: HTTP 2xx + `text/html` or `application/json` content-type for a URL that should return video/audio bytes (contains `get_video` or ends with `.mp4`/`.m4v`/`.webm`/`.mkv`).
+- Added a new refresh-and-retry block after the existing hard-403 refresh: if `isSoftBlocked` returns true and we have a `page` param, call `refreshSourceUrl(page, "mp4")` to get a fresh token, then retry the request.
+
+#### Fix 4: `/api/refresh` endpoint (`src/app/api/refresh/route.ts`)
+- New POST endpoint that takes `{ url, preferType }` and returns `{ ok, source: { url, type, filename, label, ext } }`.
+- Calls `extract()` directly (NOT the `/api/extract` route) so it doesn't save to history — it's a silent refresh for download-time use.
+- Used by the download dialog to get a fresh, unused token before downloading.
+
+#### Fix 5: Download dialog refreshes token before downloading (`src/components/download-progress-dialog.tsx`)
+- Updated `basenameFor` to prefer `src.filename` (the original filename) when available, falling back to the sanitized label only when no filename is set. The saved file now has the correct name (e.g., "2_5363822546728819944.mp4" instead of "mp4_2_5363822546728819944_mp4.mp4").
+- Added a preliminary `/api/refresh` call at the start of the download flow (only for non-HLS/DASH sources). This ensures the download always starts with a fresh, unused token — critical for streamtape where the Watch session can exhaust the original token. If the refresh fails, the download falls back to the original source URL.
+
+#### Fix 6: `downloadUrlFor` uses original filename (`src/components/source-card.tsx`)
+- Updated `downloadUrlFor` to prefer `src.filename` for the `name` query param (passed to the proxy's `Content-Disposition: attachment; filename=...` header). Falls back to the sanitized label only when no filename is set.
+
+### QA Verification — All Pass ✓
+
+1. **Extraction**: `POST /api/extract` returns 1 MP4 source with the REAL token (from JS literal), `&stream=1` appended, original filename preserved. Takes ~400-1100ms.
+2. **Preview (Watch)**: Video player loads `/api/proxy?url=...&page=...`. Proxy follows 302 → CDN, returns 206 Partial Content with `Content-Range: bytes 0-1023/12196043` and 1024 bytes of MP4 data (`ftyp isom` box header). Video plays: currentTime=10.7s, duration=103.2s, readyState=4, paused=false.
+3. **Download (isolated)**: Download dialog fetches `/api/refresh` → fresh token, then `/api/proxy?...&download=1&name=2_5363822546728819944.mp4` → 200 with 11.6 MB MP4. Done in 11.7s. Save file link uses original filename.
+4. **Download after Watch**: Watch session plays for 8s (consuming the original token via multiple Range requests). Close Watch. Click Download → `/api/refresh` gets fresh token (470ms) → download with fresh token succeeds (200, 14.2s, full 11.6 MB). **This was the user's primary complaint — now fixed.**
+5. **Lint**: `bun run lint` → 0 errors / 0 warnings.
+6. **Dev log**: All requests return 200/206. No errors. Refresh endpoint works (470ms). Token rotation visible in logs (Watch uses token A, Download uses token B from refresh).
+7. **Browser**: No console errors. All UI elements render correctly. Dialog opens/closes cleanly.
+
+### Files Created
+- `src/app/api/refresh/route.ts` — POST endpoint for silent source URL refresh (no history save)
+
+### Files Modified
+- `src/lib/types.ts` — Added `filename?: string` field to `VideoSource` interface
+- `src/lib/site-extractors.ts` — Rewrote `extractStreamtape` with JS-literal token parsing, `&stream=1`, original filename extraction
+- `src/lib/curl-stream.ts` — Fixed redirect-chain state machine bug (wait for more data when boundary bytes are insufficient)
+- `src/app/api/proxy/route.ts` — Added `isSoftBlocked` helper + soft-403 refresh-and-retry logic
+- `src/components/source-card.tsx` — Updated `downloadUrlFor` to prefer original filename for `Content-Disposition`
+- `src/components/download-progress-dialog.tsx` — Updated `basenameFor` to use original filename; added `/api/refresh` call before download to get fresh token
+
+### Stage Summary
+- **Root cause**: Streamtape puts DECOY tokens in static HTML; the real token is only in a JS string literal that gets `.substring()`'d at runtime. The old extractor matched the decoy. Additionally, `&stream=1` is required for the `get_video` endpoint to 302-redirect to the CDN MP4.
+- **Six-part fix**: (1) new extractor parses JS literal for real token + builds URL with `&stream=1` + preserves original filename; (2) curl-stream state machine fixed to handle redirect chains correctly; (3) proxy detects soft-403 (200 + text/html for video URL) and refreshes; (4) new `/api/refresh` endpoint for silent token refresh; (5) download dialog refreshes token before downloading (fixes Watch-then-Download failure); (6) original filename used for download `Content-Disposition` and Save file link.
+- **Preview AND download now work end-to-end for streamtape.com**, including the Watch-then-Download flow that previously failed due to token exhaustion. Verified in the browser with agent-browser.
+
+### Unresolved / Risks
+- Streamtape's anti-bot is aggressive: tokens are rate-limited (2-3 uses per token) and the IP may also be temporarily rate-limited after heavy use. The refresh-on-download approach mitigates this for typical usage, but rapid repeated downloads (e.g., 5+ in quick succession) could still hit the IP rate limit.
+- The JS obfuscation pattern may change again. The extractor's regex is somewhat resilient (it matches any quoted string with `&expires=X&ip=Y&token=Z`), but a future change could break it. The fallback to the static HTML regex is a safety net (though static tokens are decoys on modern streamtape).
+- The `&stream=1` requirement was empirically determined. Streamtape could change this (e.g., require `&download=1` instead, or add a new param). The extractor would need updating.
+- On Vercel (serverless), the `curl` binary is unavailable, so the `fetchStreamFallback` is used. This should still work for streamtape (no Cloudflare bot protection on `get_video`), but the redirect-chain handling relies on `fetch`'s built-in `redirect: "follow"` (which works correctly). The soft-403 detection and refresh logic are server-side and work the same.

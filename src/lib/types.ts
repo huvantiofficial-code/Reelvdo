@@ -30,6 +30,8 @@ export interface VideoSource {
   isMaster?: boolean;
   /** Original page URL the source was extracted from (for token refresh). */
   pageUrl?: string;
+  /** Original filename when known (used for download Content-Disposition). */
+  filename?: string;
 }
 
 export interface ExtractMeta {
