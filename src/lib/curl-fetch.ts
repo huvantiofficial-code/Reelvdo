@@ -83,8 +83,19 @@ async function fetchFallback(
       // keep
     }
   }
-  const headers: Record<string, string> = defaultHeaders(referer);
-  if (opts.headers) Object.assign(headers, opts.headers);
+  // Build headers case-insensitively so caller overrides win (matches the
+  // curlFetch behavior).
+  const headerMap = new Map<string, string>();
+  for (const [k, v] of Object.entries(defaultHeaders(referer))) {
+    headerMap.set(k.toLowerCase(), v);
+  }
+  if (opts.headers) {
+    for (const [k, v] of Object.entries(opts.headers)) {
+      headerMap.set(k.toLowerCase(), v);
+    }
+  }
+  const headers: Record<string, string> = {};
+  for (const [k, v] of headerMap) headers[k] = v;
 
   const method = opts.method || "GET";
   const init: RequestInit = { method, headers, redirect: "follow" };
@@ -124,6 +135,27 @@ export async function curlFetch(
   if (!(await isCurlAvailable())) return fetchFallback(url, opts);
 
   const timeoutMs = opts.timeoutMs ?? 25000;
+  // Build headers as a case-insensitive map so caller-provided headers
+  // OVERRIDE the defaults instead of being sent as duplicates (which can
+  // cause servers to reject the request — e.g. playmate.to's /api/s returns
+  // 403 "forbidden" when both "sec-fetch-dest: document" and "empty" are sent).
+  const headerMap = new Map<string, string>();
+  headerMap.set("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8");
+  headerMap.set("accept-language", "en-US,en;q=0.9");
+  headerMap.set("sec-ch-ua", '"Chromium";v="131", "Not_A Brand";v="24"');
+  headerMap.set("sec-ch-ua-mobile", "?0");
+  headerMap.set("sec-ch-ua-platform", '"Windows"');
+  headerMap.set("sec-fetch-dest", "document");
+  headerMap.set("sec-fetch-mode", "navigate");
+  headerMap.set("sec-fetch-site", "none");
+  headerMap.set("sec-fetch-user", "?1");
+  headerMap.set("upgrade-insecure-requests", "1");
+  if (opts.headers) {
+    for (const [k, v] of Object.entries(opts.headers)) {
+      headerMap.set(k.toLowerCase(), v);
+    }
+  }
+
   const args: string[] = [
     "-sS", // silent but show errors
     "-L", // follow redirects
@@ -133,19 +165,14 @@ export async function curlFetch(
     "--max-time", String(Math.ceil(timeoutMs / 1000)),
     "--connect-timeout", "15",
     "-A", UA,
-    "-H", "accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "-H", "accept-language: en-US,en;q=0.9",
-    "-H", "sec-ch-ua: \"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"",
-    "-H", "sec-ch-ua-mobile: ?0",
-    "-H", "sec-ch-ua-platform: \"Windows\"",
-    "-H", "sec-fetch-dest: document",
-    "-H", "sec-fetch-mode: navigate",
-    "-H", "sec-fetch-site: none",
-    "-H", "sec-fetch-user: ?1",
-    "-H", "upgrade-insecure-requests: 1",
+  ];
+  for (const [k, v] of headerMap) {
+    args.push("-H", `${k}: ${v}`);
+  }
+  args.push(
     "-o", "-", // body to stdout
     "-w", "\n__CURL_META__\n%{http_code}\n%{url_effective}\n%{content_type}", // write meta after body
-  ];
+  );
 
   // Use an explicit referer override when provided (e.g. the embedding page
   // for CDNs with hotlink protection); otherwise default to the target origin.
@@ -158,13 +185,11 @@ export async function curlFetch(
       // keep
     }
   }
-  args.push("-H", `referer: ${referer}`);
-
-  if (opts.headers) {
-    for (const [k, v] of Object.entries(opts.headers)) {
-      args.push("-H", `${k}: ${v}`);
-    }
+  // Only add referer if not already set by the caller via opts.headers.
+  if (!headerMap.has("referer")) {
+    args.push("-H", `referer: ${referer}`);
   }
+
   if (opts.method === "POST" && opts.body !== undefined) {
     // Pass body as a direct argument (execFile does not invoke a shell, so
     // this is safe from injection). Avoids stdin-piping quirks.

@@ -20,10 +20,13 @@ export function VideoPlayer({ url, type, poster, title, pageUrl }: PlayerProps) 
   const [errMsg, setErrMsg] = useState("");
 
   // Resolve the playable URL through our proxy/playlist endpoints.
+  // Pass an explicit `kind` hint so the backend treats URLs without the
+  // standard .m3u8/.mpd extension as playlists (e.g. playmate.to uses
+  // .txt for HLS master/variant playlists).
   const playable = (() => {
     const page = pageUrl ? `&page=${encodeURIComponent(pageUrl)}` : "";
-    if (type === "m3u8") return `/api/playlist?url=${encodeURIComponent(url)}${page}`;
-    if (type === "mpd") return `/api/playlist?url=${encodeURIComponent(url)}${page}`;
+    if (type === "m3u8") return `/api/playlist?url=${encodeURIComponent(url)}${page}&kind=m3u8`;
+    if (type === "mpd") return `/api/playlist?url=${encodeURIComponent(url)}${page}&kind=mpd`;
     return `/api/proxy?url=${encodeURIComponent(url)}${page}`;
   })();
 

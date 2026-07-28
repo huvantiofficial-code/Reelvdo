@@ -550,3 +550,56 @@ Stage Summary:
 Unresolved / Risks:
 - sd1.playmate.to is NXDOMAIN in this sandbox (cannot fully E2E test preview/download here). Will work on Vercel.
 - The download_url token may be IP-bound or time-limited; the existing 403-refresh mechanism (refreshSourceUrl → re-extract) handles this.
+
+---
+Task ID: playmate-fix-v2
+Agent: main (Z.ai Code)
+Task: Fix playmate.to — preview and download both not working (follow-up to playmate-fix which used the broken sd1.playmate.to download URL)
+
+Work Log:
+- Diagnosed: the previous fix relied on /api/download which returns a URL on sd1.playmate.to. Verified via Cloudflare DoH + Google DoH that sd1.playmate.to is NXDOMAIN GLOBALLY (Status: 3) — not just in the sandbox. So the previous fix could never work, on Vercel or anywhere.
+- Used Playwright (Python, headless Chromium) to load https://playmate.to/embed/8EUzdmZ7ODgKf and capture all network requests. Discovered the REAL video source flow:
+  1. POST https://playmate.to/api/s body {"c":filecode,"d":"web"} → returns JSON {sx, ix, lx, cx, ...}
+  2. sx field = HLS master playlist URL on wesa231.handitrrel.com (e.g. https://wesa231.handitrrel.com/hls/{token}/master.txt)
+  3. master.txt → variant index_avc_720p.txt (720p, 394x720, ~560kbps)
+  4. index_avc_720p.txt → 8 TS segments with FAKE extensions (.css, .js, .woff, .woff2) to evade ad-blockers. Content-Type is video/mp2t.
+  5. CDN has CORS access-control-allow-origin: * — works without proxy, but proxy is used for consistency.
+- Rewrote extractPlaymate (src/lib/site-extractors.ts):
+  - Calls POST /api/s with API-appropriate headers (sec-fetch-dest: empty, sec-fetch-mode: cors, accept: application/json) instead of the default browser-navigation headers.
+  - Returns the HLS master URL (sx) as an m3u8 source.
+  - Also fetches /api/download (in a non-fatal try/catch) for duration metadata only — the download_url itself is NOT used because sd1.playmate.to is NXDOMAIN.
+- Fixed curlFetch (src/lib/curl-fetch.ts) header handling:
+  - Root cause: default headers (sec-fetch-dest: document, etc.) were added as -H flags, then caller overrides (sec-fetch-dest: empty) were ALSO added as separate -H flags. curl sent BOTH, and playmate.to's API rejected the duplicate conflicting headers with 403 "forbidden".
+  - Fix: build headers in a case-insensitive Map. Defaults first, then caller overrides REPLACE (not duplicate). Same fix applied to fetchFallback (for Vercel).
+  - This benefits ALL callers that need to override default headers, not just playmate.
+- Updated /api/playlist route (src/app/api/playlist/route.ts):
+  - Added `kind` query param ("m3u8" | "mpd") as an explicit hint. The frontend passes kind=m3u8 for HLS sources so the backend treats .txt playlist URLs (playmate's master.txt / index_avc_720p.txt) as playlists instead of binary streams.
+  - Updated rewriteM3u8 to distinguish sub-playlist URLs (after #EXT-X-STREAM-INF) from segment URLs (after #EXTINF). Sub-playlist URLs get kind=m3u8 in the proxied URL; segment URLs don't (so they stream as binary). This is essential for playmate where sub-playlists end in .txt (not .m3u8).
+  - Updated proxied() helper to accept and forward the kind param.
+- Updated video-player.tsx to pass kind=m3u8 / kind=mpd hint when constructing the /api/playlist URL for HLS/DASH sources.
+
+QA Verification — All Pass ✓
+- bun run lint: 0 errors, 0 warnings
+- POST /api/extract {url: "https://playmate.to/watch/8EUzdmZ7ODgKf"} → 200, returns 1 HLS source (720p · 394x720, host: wesa231.handitrrel.com, pageUrl preserved). Extraction takes ~3.3s.
+- GET /api/playlist?url=...index_avc_720p.txt&kind=m3u8&page=... → 200, returns rewritten m3u8 with all 8 segment URLs proxied through /api/playlist.
+- GET /api/playlist?url=...RbftmMmO_000.css&page=... → 200, 2.1MB, content-type: video/mp2t (segment streams correctly despite .css extension).
+- GET /api/stream?url=...index_avc_720p.txt&page=... → 200, 13.9MB MPEG-TS file (all 8 segments concatenated). Matches expected ~14MB from API metadata.
+- Browser E2E (agent-browser):
+  - Page renders, URL input filled, Fetch clicked.
+  - Source card appears: "Site extractor · playmate", "1 source", "Extracted in 4.2s", "720p · 394x720", host: wesa231.handitrrel.com.
+  - Watch button clicked → video element src = /api/playlist?...&kind=m3u8, readyState=4, duration=79.47s (matches 1:19), video.play() succeeds, currentTime advances (playback working).
+  - Download button clicked → progress dialog shows "15.1 MB / 15.1 MB, Done in 3.9s, READY", Save file button available.
+- Dev log confirms all requests: playlist 200/467ms, segments 206 with range support, size 200, stream 200 in 3.7s.
+
+Stage Summary:
+- Root cause: previous fix used the /api/download URL (sd1.playmate.to) which is NXDOMAIN globally. The real video source is an HLS stream on wesa231.handitrrel.com, discoverable only via POST /api/s (which the JW Player's obfuscated player-core.min.js calls at runtime).
+- Three-part fix:
+  1. New extractPlaymate that calls POST /api/s for the HLS master URL.
+  2. curlFetch header deduplication (case-insensitive Map) so caller overrides actually replace defaults — fixed a 403 "forbidden" from playmate's API caused by duplicate sec-fetch-* headers.
+  3. /api/playlist `kind` hint + rewriteM3u8 sub-playlist detection so .txt HLS playlists (playmate's evasion tactic) are correctly treated as playlists, while .css/.js/.woff/.woff2 segments stream as binary.
+- Preview AND download now work end-to-end for playmate.to, verified in the browser.
+
+Unresolved / Risks:
+- The HLS token (gz8gQFsfVjxKLAT6nqnIdQm77dIZ7NOm in the path) may be IP-bound or time-limited. If it expires, the existing refreshSourceUrl mechanism re-runs extractPlaymate to get a fresh token. Verified the refresh path exists but did not trigger an expiry scenario.
+- Playmate could change their API shape (/api/s field names sx/ix/lx) or add additional auth (cookies, signed requests). The extractor will need updating if so.
+- sd1.playmate.to (the /api/download URL) is genuinely NXDOMAIN — not a sandbox issue. The download_url from /api/download is permanently broken. We only use /api/download for duration metadata now.

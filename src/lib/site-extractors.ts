@@ -269,9 +269,18 @@ async function extractVidara(html: string, finalUrl: string): Promise<VideoSourc
 /* ------------------------------------------------------------------ */
 /* Site: Playmate (playmate.to)                                        */
 /* JS SPA — /watch/{filecode} has no sources in HTML.                  */
-/* GET /api/download?filecode={id} -> {download_url, title, size, ...} */
-/* GET /api/video-meta?filecode={id} -> {title, uploader, ...}         */
-/* The CDN (sd1.playmate.to) needs referer: https://playmate.to/       */
+/*                                                                      */
+/* Real flow (discovered via headless-browser network capture):        */
+/*  POST /api/s  body {"c":filecode,"d":"web"}                          */
+/*   -> { sx: "https://wesa231.handitrrel.com/hls/{token}/master.txt",  */
+/*        ix: thumbnail, lx: language, ... }                            */
+/*  The HLS playlist uses fake extensions (.txt for playlists,         */
+/*  .css/.js/.woff/.woff2 for TS segments) to evade ad-blockers.       */
+/*  CDN has CORS: access-control-allow-origin: * so preview works      */
+/*  directly in-browser. Segments are video/mp2t.                      */
+/*                                                                      */
+/* The legacy /api/download URL (sd1.playmate.to) is NXDOMAIN globally */
+/* and is NOT used — only the HLS stream is returned.                  */
 /* ------------------------------------------------------------------ */
 async function extractPlaymate(finalUrl: string): Promise<VideoSource[] | null> {
   const fcMatch = finalUrl.match(/\/watch\/([^/?#]+)/);
@@ -279,47 +288,84 @@ async function extractPlaymate(finalUrl: string): Promise<VideoSource[] | null> 
   const filecode = fcMatch[1];
   const origin = new URL(finalUrl).origin;
 
-  // Fetch the direct download URL. The /api/download endpoint returns a JSON
-  // object with download_url, title, size_formatted, and duration.
-  let data: {
-    download_url?: string;
-    title?: string;
-    size_formatted?: string;
-    size?: number;
-    duration?: string;
-    success?: boolean;
+  // POST /api/s to get the streaming config (HLS master URL + thumbnail).
+  // Use API-appropriate headers (sec-fetch-* = cors/empty, accept = json)
+  // because the default curlFetch headers are browser-navigation headers
+  // which playmate's API rejects with 403 "forbidden".
+  let sData: {
+    sx?: string; // HLS master playlist URL
+    ix?: string; // thumbnail URL
+    lx?: string; // language
+    cx?: string; // filecode echo
+    ax?: string; // ad URL
+    tx?: string; // title
+    kx?: string | null;
   } = {};
   try {
-    const r = await curlFetch(`${origin}/api/download?filecode=${encodeURIComponent(filecode)}`, {
-      headers: { referer: finalUrl },
+    const r = await curlFetch(`${origin}/api/s`, {
+      method: "POST",
+      body: JSON.stringify({ c: filecode, d: "web" }),
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/plain, */*",
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+        origin,
+        //referer already set below
+      },
       timeoutMs: 15000,
+      referer: finalUrl,
     });
-    if (r.ok) data = JSON.parse(r.text);
+    if (r.ok) sData = JSON.parse(r.text);
   } catch {
     return null;
   }
-  if (!data.download_url) return null;
+  if (!sData.sx) return null;
 
-  const u = data.download_url;
-  const t = classifyUrl(u);
-  // Build a useful label: "MP4 · 16.19 MB · 1:19"
-  const parts: string[] = [t.toUpperCase()];
-  if (data.size_formatted) parts.push(data.size_formatted);
-  if (data.duration) {
-    // Trim leading zeros for readability: 00:01:19 -> 1:19
-    const dur = data.duration.replace(/^00:(?=\d{2}:)/, "").replace(/^0(?=\d:)/, "");
-    parts.push(dur);
+  const sources: VideoSource[] = [];
+  // The HLS master playlist. Classify as m3u8 (HLS) since the content-type
+  // is application/vnd.apple.mpegurl even though the URL ends in .txt.
+  sources.push({
+    url: sData.sx,
+    type: "m3u8",
+    ext: "m3u8",
+    label: "HLS · 720p",
+    quality: "720p",
+    // Hint for the playlist proxy: the playlist text uses fake extensions
+    // (.txt for sub-playlists, .css/.js/.woff/.woff2 for TS segments).
+    // Mark as HLS so the player uses hls.js.
+  });
+
+  // Also fetch the download metadata (title, size, duration) for display.
+  // We don't use the download_url itself because sd1.playmate.to is NXDOMAIN.
+  try {
+    const dr = await curlFetch(`${origin}/api/download?filecode=${encodeURIComponent(filecode)}`, {
+      headers: { referer: finalUrl },
+      timeoutMs: 10000,
+    });
+    if (dr.ok) {
+      const dData: {
+        title?: string;
+        size_formatted?: string;
+        size?: number;
+        duration?: string;
+        success?: boolean;
+      } = JSON.parse(dr.text);
+      // Enrich the HLS label with duration info: "HLS · 720p · 1:19"
+      if (dData.duration) {
+        const dur = dData.duration
+          .replace(/^00:(?=\d{2}:)/, "")
+          .replace(/^0(?=\d:)/, "");
+        sources[0].label = `HLS · 720p · ${dur}`;
+      }
+      if (dData.size_formatted) sources[0].size = dData.size_formatted;
+    }
+  } catch {
+    // Non-fatal — HLS source is still valid.
   }
 
-  return [
-    {
-      url: u,
-      type: t,
-      ext: extOf(u),
-      label: parts.join(" · "),
-      size: data.size_formatted,
-    },
-  ];
+  return sources;
 }
 
 /* ------------------------------------------------------------------ */
