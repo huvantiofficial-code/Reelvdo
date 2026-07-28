@@ -34,8 +34,17 @@ export async function GET(req: NextRequest) {
 
   let segments;
   let totalDuration: number | null = null;
+  // Derive a hotlink referer from the embedding page (if provided).
+  let referer: string | undefined;
+  if (page) {
+    try {
+      referer = new URL(page).origin + "/";
+    } catch {
+      // ignore
+    }
+  }
   try {
-    const r = await resolveSegments(target);
+    const r = await resolveSegments(target, { referer });
     segments = r.segments;
     totalDuration = r.totalDuration || null;
   } catch (e) {
@@ -45,7 +54,7 @@ export async function GET(req: NextRequest) {
       if (fresh && fresh.url !== target) {
         target = fresh.url;
         try {
-          const r2 = await resolveSegments(target);
+          const r2 = await resolveSegments(target, { referer });
           segments = r2.segments;
           totalDuration = r2.totalDuration || null;
         } catch (e2) {
@@ -80,7 +89,7 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const { total, estimated, resolved, failed } = await totalSegmentBytes(segments);
+    const { total, estimated, resolved, failed } = await totalSegmentBytes(segments, { referer });
     return NextResponse.json(
       {
         ok: true,

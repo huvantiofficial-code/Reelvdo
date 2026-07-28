@@ -268,37 +268,58 @@ async function extractVidara(html: string, finalUrl: string): Promise<VideoSourc
 
 /* ------------------------------------------------------------------ */
 /* Site: Playmate (playmate.to)                                        */
-/* GET /api/download?filecode={id} -> download_url (mp4)               */
+/* JS SPA — /watch/{filecode} has no sources in HTML.                  */
+/* GET /api/download?filecode={id} -> {download_url, title, size, ...} */
+/* GET /api/video-meta?filecode={id} -> {title, uploader, ...}         */
+/* The CDN (sd1.playmate.to) needs referer: https://playmate.to/       */
 /* ------------------------------------------------------------------ */
 async function extractPlaymate(finalUrl: string): Promise<VideoSource[] | null> {
   const fcMatch = finalUrl.match(/\/watch\/([^/?#]+)/);
   if (!fcMatch) return null;
   const filecode = fcMatch[1];
   const origin = new URL(finalUrl).origin;
+
+  // Fetch the direct download URL. The /api/download endpoint returns a JSON
+  // object with download_url, title, size_formatted, and duration.
+  let data: {
+    download_url?: string;
+    title?: string;
+    size_formatted?: string;
+    size?: number;
+    duration?: string;
+    success?: boolean;
+  } = {};
   try {
     const r = await curlFetch(`${origin}/api/download?filecode=${encodeURIComponent(filecode)}`, {
       headers: { referer: finalUrl },
       timeoutMs: 15000,
     });
-    if (!r.ok) return null;
-    let data: { download_url?: string; title?: string; size_formatted?: string; duration?: string; success?: boolean } = {};
-    try { data = JSON.parse(r.text); } catch { return null; }
-    if (!data.download_url) return null;
-    const u = data.download_url;
-    const t = classifyUrl(u);
-    return [
-      {
-        url: u,
-        type: t,
-        ext: extOf(u),
-        label: t.toUpperCase(),
-        quality: data.size_formatted || undefined,
-        size: data.size_formatted,
-      },
-    ];
+    if (r.ok) data = JSON.parse(r.text);
   } catch {
     return null;
   }
+  if (!data.download_url) return null;
+
+  const u = data.download_url;
+  const t = classifyUrl(u);
+  // Build a useful label: "MP4 · 16.19 MB · 1:19"
+  const parts: string[] = [t.toUpperCase()];
+  if (data.size_formatted) parts.push(data.size_formatted);
+  if (data.duration) {
+    // Trim leading zeros for readability: 00:01:19 -> 1:19
+    const dur = data.duration.replace(/^00:(?=\d{2}:)/, "").replace(/^0(?=\d:)/, "");
+    parts.push(dur);
+  }
+
+  return [
+    {
+      url: u,
+      type: t,
+      ext: extOf(u),
+      label: parts.join(" · "),
+      size: data.size_formatted,
+    },
+  ];
 }
 
 /* ------------------------------------------------------------------ */

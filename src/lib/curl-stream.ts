@@ -11,6 +11,15 @@ export interface StreamResult {
   body: ReadableStream<Uint8Array>;
 }
 
+export interface StreamOpts {
+  headers?: Record<string, string>;
+  range?: string | null;
+  timeoutMs?: number;
+  /** Override the referer (defaults to the target's own origin). Pass the
+   *  embedding page URL when a CDN requires hotlink-style referer auth. */
+  referer?: string;
+}
+
 function parseHeaders(block: Buffer): {
   status: number;
   headers: Record<string, string>;
@@ -35,18 +44,21 @@ function parseHeaders(block: Buffer): {
  */
 async function fetchStreamFallback(
   url: string,
-  opts: { headers?: Record<string, string>; range?: string | null; timeoutMs?: number } = {}
+  opts: StreamOpts = {}
 ): Promise<StreamResult> {
   const headers: Record<string, string> = {
     accept: "*/*",
     "accept-language": "en-US,en;q=0.9",
     "user-agent": UA,
   };
-  let referer = url;
-  try {
-    referer = new URL(url).origin + "/";
-  } catch {
-    // keep
+  let referer = opts.referer;
+  if (!referer) {
+    referer = url;
+    try {
+      referer = new URL(url).origin + "/";
+    } catch {
+      // keep
+    }
   }
   headers["referer"] = referer;
   if (opts.headers) Object.assign(headers, opts.headers);
@@ -82,7 +94,7 @@ async function fetchStreamFallback(
  */
 export async function curlStream(
   url: string,
-  opts: { headers?: Record<string, string>; range?: string | null; timeoutMs?: number } = {}
+  opts: StreamOpts = {}
 ): Promise<StreamResult> {
   if (!(await isCurlAvailable())) return fetchStreamFallback(url, opts);
   return curlStreamViaCurl(url, opts);
@@ -90,7 +102,7 @@ export async function curlStream(
 
 function curlStreamViaCurl(
   url: string,
-  opts: { headers?: Record<string, string>; range?: string | null; timeoutMs?: number } = {}
+  opts: StreamOpts = {}
 ): Promise<StreamResult> {
   const timeoutMs = opts.timeoutMs ?? 280000;
   const args: string[] = [
@@ -104,13 +116,18 @@ function curlStreamViaCurl(
     "-o", "-",
   ];
 
-  let origin = url;
-  try {
-    origin = new URL(url).origin + "/";
-  } catch {
-    // keep
+  // Use an explicit referer override when provided (e.g. the embedding page
+  // for CDNs with hotlink protection); otherwise default to the target origin.
+  let referer = opts.referer;
+  if (!referer) {
+    referer = url;
+    try {
+      referer = new URL(url).origin + "/";
+    } catch {
+      // keep
+    }
   }
-  args.push("-H", `referer: ${origin}`);
+  args.push("-H", `referer: ${referer}`);
 
   if (opts.headers) {
     for (const [k, v] of Object.entries(opts.headers)) {

@@ -23,8 +23,9 @@ export async function OPTIONS() {
   return new Response(null, { status: 204, headers: corsHeaders() });
 }
 
-/** Build a proxied URL pointing back at this endpoint. */
-function proxied(target: string, base: string): string {
+/** Build a proxied URL pointing back at this endpoint, preserving the
+ *  `page` param so nested fetches keep the correct hotlink referer. */
+function proxied(target: string, base: string, page?: string | null): string {
   let abs: string;
   try {
     abs = new URL(target, base).toString();
@@ -33,10 +34,12 @@ function proxied(target: string, base: string): string {
   }
   // Route everything through /api/playlist so nested playlists + segments
   // are both handled (segments stream through).
-  return `/api/playlist?url=${encodeURIComponent(abs)}`;
+  let out = `/api/playlist?url=${encodeURIComponent(abs)}`;
+  if (page) out += `&page=${encodeURIComponent(page)}`;
+  return out;
 }
 
-function rewriteM3u8(text: string, base: string): string {
+function rewriteM3u8(text: string, base: string, page?: string | null): string {
   const lines = text.split(/\r?\n/);
   return lines
     .map((line) => {
@@ -44,23 +47,23 @@ function rewriteM3u8(text: string, base: string): string {
       if (!trimmed || trimmed.startsWith("#")) {
         if (trimmed.startsWith("#") && /URI=/.test(trimmed)) {
           return trimmed.replace(/URI="([^"]+)"/g, (_m, uri: string) => {
-            return `URI="${proxied(uri, base)}"`;
+            return `URI="${proxied(uri, base, page)}"`;
           });
         }
         return line;
       }
-      return proxied(trimmed, base);
+      return proxied(trimmed, base, page);
     })
     .join("\n");
 }
 
-function rewriteMpd(xml: string, base: string): string {
+function rewriteMpd(xml: string, base: string, page?: string | null): string {
   let out = xml.replace(/<BaseURL>([^<]+)<\/BaseURL>/g, (_m, url: string) => {
-    return `<BaseURL>${proxied(url.trim(), base)}</BaseURL>`;
+    return `<BaseURL>${proxied(url.trim(), base, page)}</BaseURL>`;
   });
   out = out.replace(/\b(media|initialization|sourceURL|range)="([^"]+)"/g, (_m, attr: string, val: string) => {
     if (/^https?:\/\//.test(val) || val.startsWith("/api/")) return _m;
-    return `${attr}="${proxied(val, base)}"`;
+    return `${attr}="${proxied(val, base, page)}"`;
   });
   return out;
 }
@@ -89,12 +92,24 @@ export async function GET(req: NextRequest) {
   const isM3u8 = target.toLowerCase().includes(".m3u8");
   const isMpd = target.toLowerCase().includes(".mpd");
 
+  // Derive the hotlink referer from the embedding page (if provided), so
+  // CDNs that check referer (e.g. playmate's sd1 CDN) serve the file.
+  let referer: string | undefined;
+  if (page) {
+    try {
+      referer = new URL(page).origin + "/";
+    } catch {
+      // ignore
+    }
+  }
+
   // Playlists are small text — fetch fully and rewrite.
   if (isM3u8 || isMpd) {
     const fetchPlaylist = async (url: string) =>
       curlFetch(url, {
-        headers: { accept: "*/*", referer: new URL(url).origin + "/" },
+        headers: { accept: "*/*" },
         timeoutMs: 20000,
+        referer,
       });
 
     let r;
@@ -150,7 +165,7 @@ export async function GET(req: NextRequest) {
         headers: { "content-type": "application/json", ...corsHeaders() },
       });
     }
-    const rewritten = isM3u8 ? rewriteM3u8(r.text, target) : rewriteMpd(r.text, target);
+    const rewritten = isM3u8 ? rewriteM3u8(r.text, target, page) : rewriteMpd(r.text, target, page);
     return new Response(rewritten, { status: 200, headers: outHeaders });
   }
 
@@ -158,7 +173,7 @@ export async function GET(req: NextRequest) {
   const range = req.headers.get("range");
   let result;
   try {
-    result = await curlStream(target, { range });
+    result = await curlStream(target, { range, referer });
   } catch (e) {
     return new Response(
       JSON.stringify({ error: "Upstream fetch failed", detail: e instanceof Error ? e.message : "" }),

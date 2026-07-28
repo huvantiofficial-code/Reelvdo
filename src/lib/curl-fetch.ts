@@ -45,9 +45,9 @@ export interface CurlBufferResult {
 /** Fetch a URL and return the body as a Buffer (for binary data). */
 export async function curlFetchBuffer(
   url: string,
-  opts: { headers?: Record<string, string>; timeoutMs?: number } = {}
+  opts: { headers?: Record<string, string>; timeoutMs?: number; referer?: string } = {}
 ): Promise<CurlBufferResult> {
-  const r = await curlStream(url, { headers: opts.headers, timeoutMs: opts.timeoutMs });
+  const r = await curlStream(url, { headers: opts.headers, timeoutMs: opts.timeoutMs, referer: opts.referer });
   const reader = r.body.getReader();
   const chunks: Uint8Array[] = [];
   for (;;) {
@@ -71,14 +71,17 @@ export async function curlFetchBuffer(
  */
 async function fetchFallback(
   url: string,
-  opts: { headers?: Record<string, string>; method?: string; body?: string; timeoutMs?: number } = {}
+  opts: { headers?: Record<string, string>; method?: string; body?: string; timeoutMs?: number; referer?: string } = {}
 ): Promise<CurlResult> {
   const timeoutMs = opts.timeoutMs ?? 25000;
-  let referer = url;
-  try {
-    referer = new URL(url).origin + "/";
-  } catch {
-    // keep
+  let referer = opts.referer;
+  if (!referer) {
+    referer = url;
+    try {
+      referer = new URL(url).origin + "/";
+    } catch {
+      // keep
+    }
   }
   const headers: Record<string, string> = defaultHeaders(referer);
   if (opts.headers) Object.assign(headers, opts.headers);
@@ -114,7 +117,7 @@ async function fetchFallback(
  */
 export async function curlFetch(
   url: string,
-  opts: { headers?: Record<string, string>; method?: string; body?: string; timeoutMs?: number } = {}
+  opts: { headers?: Record<string, string>; method?: string; body?: string; timeoutMs?: number; referer?: string } = {}
 ): Promise<CurlResult> {
   // When curl is unavailable (e.g. Vercel serverless), use the native fetch
   // fallback so extraction keeps working without the Cloudflare bypass.
@@ -144,14 +147,18 @@ export async function curlFetch(
     "-w", "\n__CURL_META__\n%{http_code}\n%{url_effective}\n%{content_type}", // write meta after body
   ];
 
-  // Set referer to target origin by default (helps with hotlink protection).
-  let origin = url;
-  try {
-    origin = new URL(url).origin + "/";
-  } catch {
-    // keep
+  // Use an explicit referer override when provided (e.g. the embedding page
+  // for CDNs with hotlink protection); otherwise default to the target origin.
+  let referer = opts.referer;
+  if (!referer) {
+    referer = url;
+    try {
+      referer = new URL(url).origin + "/";
+    } catch {
+      // keep
+    }
   }
-  args.push("-H", `referer: ${origin}`);
+  args.push("-H", `referer: ${referer}`);
 
   if (opts.headers) {
     for (const [k, v] of Object.entries(opts.headers)) {

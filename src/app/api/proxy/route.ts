@@ -21,10 +21,24 @@ export async function OPTIONS() {
 
 async function streamUrl(
   target: string,
-  range: string | null
+  range: string | null,
+  referer?: string
 ): Promise<{ status: number; headers: Record<string, string>; body: ReadableStream<Uint8Array> }> {
-  const r = await curlStream(target, { range });
+  const r = await curlStream(target, { range, referer });
   return { status: r.status, headers: r.headers, body: r.body };
+}
+
+/** Derive a referer to send to the target CDN. Many video CDNs use hotlink
+ *  protection and only serve when the referer matches the embedding page's
+ *  origin. When the caller passes `?page=<watch-url>`, use that page's origin;
+ *  otherwise fall back to the target's own origin (curl-stream default). */
+function refererFromPage(page: string | null): string | undefined {
+  if (!page) return undefined;
+  try {
+    return new URL(page).origin + "/";
+  } catch {
+    return undefined;
+  }
 }
 
 export async function GET(req: NextRequest) {
@@ -52,10 +66,11 @@ export async function GET(req: NextRequest) {
   }
 
   const range = req.headers.get("range");
+  const referer = refererFromPage(page);
 
   let result;
   try {
-    result = await streamUrl(target, range);
+    result = await streamUrl(target, range, referer);
   } catch (e) {
     // If the fetch itself threw and we have a refresh page, try once.
     if (page) {
@@ -64,7 +79,7 @@ export async function GET(req: NextRequest) {
         target = fresh.url;
         try {
           targetUrl = new URL(target);
-          result = await streamUrl(target, range);
+          result = await streamUrl(target, range, referer);
         } catch {
           return new Response(
             JSON.stringify({ error: "Upstream fetch failed", detail: e instanceof Error ? e.message : "" }),
@@ -93,7 +108,7 @@ export async function GET(req: NextRequest) {
       target = fresh.url;
       try {
         targetUrl = new URL(target);
-        result = await streamUrl(target, range);
+        result = await streamUrl(target, range, referer);
       } catch {
         // keep original failure
       }

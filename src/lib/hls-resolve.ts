@@ -10,12 +10,14 @@ export interface SegInfo {
 /** Recursively resolve an m3u8 (master → media playlist) into a segment list. */
 export async function resolveSegments(
   startUrl: string,
-  depth = 0
+  opts?: { referer?: string; depth?: number }
 ): Promise<{ segments: SegInfo[]; isMaster: boolean; totalDuration?: number }> {
+  const depth = opts?.depth ?? 0;
   if (depth > 4) return { segments: [], isMaster: false };
   const r = await curlFetch(startUrl, {
     headers: { accept: "*/*" },
     timeoutMs: 20000,
+    referer: opts?.referer,
   });
   const text = r.text;
   const lines = text.split(/\r?\n/).map((l) => l.trim());
@@ -72,13 +74,14 @@ export async function resolveSegments(
 
   if (isMaster && variants.length) {
     variants.sort((a, b) => b.bandwidth - a.bandwidth);
-    return resolveSegments(variants[0].url, depth + 1);
+    return resolveSegments(variants[0].url, { referer: opts?.referer, depth: depth + 1 });
   }
   return { segments, isMaster, totalDuration };
 }
 
 /** HEAD a segment URL to get its byte size, falling back to a ranged GET. */
-export async function segmentSize(url: string, timeoutMs = 15000): Promise<number | null> {
+export async function segmentSize(url: string, opts?: { referer?: string; timeoutMs?: number }): Promise<number | null> {
+  const timeoutMs = opts?.timeoutMs ?? 15000;
   try {
     // With -I, curl prints headers to stdout. Our curlFetch returns those
     // headers as `text`. Parse Content-Length out of them.
@@ -86,6 +89,7 @@ export async function segmentSize(url: string, timeoutMs = 15000): Promise<numbe
       method: "HEAD",
       headers: { accept: "*/*" },
       timeoutMs,
+      referer: opts?.referer,
     });
     if (r.status >= 200 && r.status < 300) {
       const m = r.text.match(/content-length:\s*(\d+)/i);
@@ -101,6 +105,7 @@ export async function segmentSize(url: string, timeoutMs = 15000): Promise<numbe
     const r = await curlFetch(url, {
       headers: { range: "bytes=0-0", accept: "*/*" },
       timeoutMs,
+      referer: opts?.referer,
     });
     if (r.status === 206 || r.status === 200) {
       // Content-Range: bytes 0-0/12345
@@ -130,13 +135,15 @@ export async function segmentSize(url: string, timeoutMs = 15000): Promise<numbe
  */
 export async function totalSegmentBytes(
   segments: SegInfo[],
-  concurrency = 6
+  opts?: { referer?: string; concurrency?: number }
 ): Promise<{
   total: number | null;
   estimated: number | null;
   resolved: number;
   failed: number;
 }> {
+  const concurrency = opts?.concurrency ?? 6;
+  const referer = opts?.referer;
   if (segments.length === 0)
     return { total: 0, estimated: 0, resolved: 0, failed: 0 };
   let resolved = 0;
@@ -152,7 +159,7 @@ export async function totalSegmentBytes(
     const batch = segments.slice(i, i + concurrency);
     const results = await Promise.all(
       batch.map(async (s) => {
-        const sz = await segmentSize(s.url);
+        const sz = await segmentSize(s.url, { referer });
         return { sz, dur: s.duration };
       })
     );

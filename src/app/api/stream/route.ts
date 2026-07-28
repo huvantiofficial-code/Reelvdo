@@ -21,9 +21,19 @@ export async function OPTIONS() {
   return new Response(null, { status: 204, headers: corsHeaders() });
 }
 
-async function fetchKey(uri: string): Promise<Buffer> {
-  const r = await curlFetchBuffer(uri, { timeoutMs: 15000 });
+async function fetchKey(uri: string, referer?: string): Promise<Buffer> {
+  const r = await curlFetchBuffer(uri, { timeoutMs: 15000, referer });
   return r.buffer;
+}
+
+/** Derive a referer from the page param for hotlink-protected CDNs. */
+function refererFromPage(page: string | null): string | undefined {
+  if (!page) return undefined;
+  try {
+    return new URL(page).origin + "/";
+  } catch {
+    return undefined;
+  }
 }
 
 export async function GET(req: NextRequest) {
@@ -40,8 +50,9 @@ export async function GET(req: NextRequest) {
   }
 
   let segments: SegInfo[] = [];
+  const referer = refererFromPage(page);
   try {
-    const r = await resolveSegments(target);
+    const r = await resolveSegments(target, { referer });
     segments = r.segments;
   } catch (e) {
     // Refresh the playlist URL (token may have expired / IP-bound) and retry.
@@ -50,7 +61,7 @@ export async function GET(req: NextRequest) {
       if (fresh && fresh.url !== target) {
         target = fresh.url;
         try {
-          const r2 = await resolveSegments(target);
+          const r2 = await resolveSegments(target, { referer });
           segments = r2.segments;
         } catch {
           return new Response(
@@ -82,7 +93,7 @@ export async function GET(req: NextRequest) {
       for (let i = 0; i < segments.length; i++) {
         const seg = segments[i];
         try {
-          const r = await curlFetchBuffer(seg.url, { timeoutMs: 90000 });
+          const r = await curlFetchBuffer(seg.url, { timeoutMs: 90000, referer });
           if (!r.ok) {
             controller.enqueue(encoder.encode(`\n[segment ${i + 1} failed: ${r.status}]\n`));
             continue;
@@ -92,7 +103,7 @@ export async function GET(req: NextRequest) {
             try {
               let keyBuf = keyCache.get(seg.key.uri);
               if (!keyBuf) {
-                keyBuf = await fetchKey(seg.key.uri);
+                keyBuf = await fetchKey(seg.key.uri, referer);
                 keyCache.set(seg.key.uri, keyBuf);
               }
               let iv: Buffer;
