@@ -849,6 +849,346 @@ function looksLikeStreamtapePage(html: string): boolean {
   );
 }
 
+/* ------------------------------------------------------------------ */
+/* Site: EroMe (erome.com) — porn video & photo sharing.               */
+/*   Albums at /a/{album_id} contain one or more <video> blocks, each   */
+/*   with one or more <source src="https://v\d+.erome.com/{album_id}/  */
+/*   {file}_{q}.mp4" label='HD|SD' res='720|480'> tags. CDN is CORS-   */
+/*   open with range support. No captcha. Also handles mirror domains:  */
+/*   erome.com, www.erome.com, dev.erome.com, es.erome.com, etc.        */
+/* ------------------------------------------------------------------ */
+function extractErome(html: string, finalUrl: string): VideoSource[] | null {
+  const sources: VideoSource[] = [];
+  const seen = new Set<string>();
+  // Match every <source> tag with a v\d+.erome.com mp4 URL.
+  const sourceRe = /<source[^>]+src=["']([^"']+\.erome\.com\/[^"']+\.mp4)["'][^>]*>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = sourceRe.exec(html)) !== null) {
+    const url = m[1];
+    if (seen.has(url)) continue;
+    seen.add(url);
+    const tag = m[0];
+    const labelM = tag.match(/\blabel=["']([^"']+)["']/i);
+    const resM = tag.match(/\bres=["']([^"']+)["']/i);
+    const fileM = url.match(/_([0-9]+p)\.mp4$/i);
+    const quality = resM?.[1] ? `${resM[1]}p` : fileM?.[1] || labelM?.[1] || "MP4";
+    const label = labelM?.[1] || quality.toUpperCase();
+    sources.push({
+      url,
+      type: "mp4",
+      ext: "mp4",
+      label: `MP4 · ${label} · ${quality}`,
+      quality,
+      pageUrl: finalUrl,
+    });
+  }
+  // Poster URLs as image sources (snapshot).
+  const posterRe = /<video[^>]+poster=["']([^"']+)["']/gi;
+  while ((m = posterRe.exec(html)) !== null) {
+    if (seen.has(m[1])) continue;
+    seen.add(m[1]);
+    sources.push({
+      url: m[1],
+      type: "image",
+      ext: "jpg",
+      label: "Poster",
+      quality: "thumbnail",
+      pageUrl: finalUrl,
+    });
+  }
+  return sources.length ? sources : null;
+}
+
+/* ------------------------------------------------------------------ */
+/* Site: xHamster (xhamster.com, xhamster2.com, xhamster.desi, etc.)   */
+/*   Vue SPA page contains a JSON blob with a "sources" object. The     */
+/*   HLS m3u8 URL is in plaintext in the HTML:                          */
+/*     https://video-nss-b.xhcdn.com/mn-{token},{expiry}/media=hls4/    */
+/*     multi=256x144:144p:,...:/025/143/869/_TPL_.av1.mp4.m3u8          */
+/*   The CDN allows direct fetch + range support (CORS-open). The m3u8  */
+/*   is a master playlist with av1/h264 variants. Also handles         */
+/*   xhamster.xxx, xhamster3.com, xhamster18.com, xhamster5.com, etc.  */
+/* ------------------------------------------------------------------ */
+function extractXhamster(html: string, finalUrl: string): VideoSource[] | null {
+  const sources: VideoSource[] = [];
+  const seen = new Set<string>();
+  // 1. Find all m3u8 URLs on xhcdn.com CDN.
+  const m3u8Re = /https?:\/\/[^"'\s<>()\\]+?\.xhcdn\.com\/[^"'\s<>()\\]*?\.m3u8[^"'\s<>()\\]*/gi;
+  let m: RegExpExecArray | null;
+  while ((m = m3u8Re.exec(html)) !== null) {
+    const u = m[0].replace(/\\\//g, "/");
+    if (seen.has(u)) continue;
+    seen.add(u);
+    sources.push({
+      url: u,
+      type: "m3u8",
+      ext: "m3u8",
+      label: "HLS · xhamster",
+      quality: "HLS",
+      pageUrl: finalUrl,
+    });
+  }
+  // 2. Look for direct mp4 URLs (videoN.xhcdn.com, NOT thumb-v*.xhcdn.com)
+  const mp4Re = /https?:\/\/(?:video\d+\.xhcdn\.com|[^"'\s<>()\\]*?\.xhcdn\.com)\/[^"'\s<>()\\]+?\.mp4[^"'\s<>()\\]*/gi;
+  while ((m = mp4Re.exec(html)) !== null) {
+    if (/thumb-v\d+\.xhcdn\.com/.test(m[0])) continue;
+    const u = m[0].replace(/\\\//g, "/");
+    if (seen.has(u)) continue;
+    seen.add(u);
+    const qM = u.match(/(\d+p)\.(?:h264|av1)/);
+    const quality = qM?.[1] || "MP4";
+    sources.push({
+      url: u,
+      type: "mp4",
+      ext: "mp4",
+      label: `MP4 · ${quality}`,
+      quality,
+      pageUrl: finalUrl,
+    });
+  }
+  return sources.length ? sources : null;
+}
+
+/* ------------------------------------------------------------------ */
+/* Site: XVideos + XNXX (xvideos.com, xvideos2.com, xnxx.com, etc.)    */
+/*   Both share the same page structure: inline JS calls like           */
+/*     html5player.setVideoUrlLow('https://mp4-gcore.xvideos-cdn.com/  */
+/*       {hash}/{n}/mp4_sd.mp4?secure=...');                           */
+/*     html5player.setVideoUrlHigh('https://...mp4_hd.mp4?secure=...');*/
+/*     html5player.setVideoHLS('https://hls-gcore.xvideos-cdn.com/...');*/
+/*   The HLS URL is a master playlist with quality variants. CDNs are  */
+/*   CORS-open with range support. XNXX uses the same player.          */
+/* ------------------------------------------------------------------ */
+function extractXvideosFamily(html: string, finalUrl: string): VideoSource[] | null {
+  const sources: VideoSource[] = [];
+  const seen = new Set<string>();
+  const reSet = /html5player\.setVideo(Url(?:Low|High|HLS)?|HLS)\s*\(\s*'([^']+)'\s*\)/gi;
+  let m: RegExpExecArray | null;
+  let highMp4: string | null = null;
+  let lowMp4: string | null = null;
+  while ((m = reSet.exec(html)) !== null) {
+    const fnName = m[1];
+    const url = m[2];
+    if (seen.has(url)) continue;
+    seen.add(url);
+    if (fnName === "HLS" || fnName === "UrlHLS") {
+      sources.push({
+        url,
+        type: "m3u8",
+        ext: "m3u8",
+        label: "HLS",
+        quality: "HLS",
+        pageUrl: finalUrl,
+      });
+    } else if (fnName === "UrlHigh") {
+      highMp4 = url;
+    } else if (fnName === "UrlLow") {
+      lowMp4 = url;
+    } else {
+      sources.push({
+        url,
+        type: "mp4",
+        ext: "mp4",
+        label: "MP4",
+        quality: "MP4",
+        pageUrl: finalUrl,
+      });
+    }
+  }
+  if (highMp4) {
+    sources.push({
+      url: highMp4,
+      type: "mp4",
+      ext: "mp4",
+      label: "MP4 · HD",
+      quality: "720p",
+      pageUrl: finalUrl,
+    });
+  }
+  if (lowMp4 && lowMp4 !== highMp4) {
+    sources.push({
+      url: lowMp4,
+      type: "mp4",
+      ext: "mp4",
+      label: "MP4 · SD",
+      quality: "480p",
+      pageUrl: finalUrl,
+    });
+  }
+  // Fallback: scan for xvideos-cdn / xnxx-cdn URLs
+  if (!sources.length) {
+    const re = /https?:\/\/[^"'\s<>()\\]+?(?:xvideos-cdn\.com|xnxx-cdn\.com)\/[^"'\s<>()\\]+?\.(?:mp4|m3u8)[^"'\s<>()\\]*/gi;
+    while ((m = re.exec(html)) !== null) {
+      if (seen.has(m[0])) continue;
+      seen.add(m[0]);
+      const isM3u8 = /\.m3u8/i.test(m[0]);
+      sources.push({
+        url: m[0],
+        type: isM3u8 ? "m3u8" : "mp4",
+        ext: isM3u8 ? "m3u8" : "mp4",
+        label: isM3u8 ? "HLS" : "MP4",
+        quality: isM3u8 ? "HLS" : "MP4",
+        pageUrl: finalUrl,
+      });
+    }
+  }
+  return sources.length ? sources : null;
+}
+
+/* ------------------------------------------------------------------ */
+/* Site: Pornhub + Redtube + YouPorn (Pornhub network).                */
+/*   All three share the same player structure: a flashvars_{id} JSON   */
+/*   blob containing a "mediaDefinitions" array. Each entry has:        */
+/*     { quality: "1080", format: "hls",                                */
+/*       videoUrl: "https://hv-h.phncdn.com/hls/.../master.m3u8?..." }  */
+/*   Some entries are format:"mp4" with direct MP4 URLs. CDNs are      */
+/*   CORS-open with range support.                                     */
+/* ------------------------------------------------------------------ */
+function extractPornhubNetwork(html: string, finalUrl: string): VideoSource[] | null {
+  const sources: VideoSource[] = [];
+  const seen = new Set<string>();
+  // Find the mediaDefinitions JSON array in the page.
+  const mdRe = /"mediaDefinitions"\s*:\s*(\[[\s\S]*?\])\s*[,}]/i;
+  const mdM = html.match(mdRe);
+  if (mdM) {
+    try {
+      const arr = JSON.parse(mdM[1]) as Array<{
+        format?: string;
+        videoUrl?: string;
+        quality?: string;
+        height?: number;
+      }>;
+      for (const entry of arr) {
+        if (!entry.videoUrl || !/^https?:/.test(entry.videoUrl)) continue;
+        if (seen.has(entry.videoUrl)) continue;
+        seen.add(entry.videoUrl);
+        const isHls = entry.format === "hls" || /\.m3u8/i.test(entry.videoUrl);
+        const q = entry.quality || (entry.height ? `${entry.height}p` : undefined);
+        sources.push({
+          url: entry.videoUrl,
+          type: isHls ? "m3u8" : "mp4",
+          ext: isHls ? "m3u8" : "mp4",
+          label: `${isHls ? "HLS" : "MP4"}${q ? ` · ${q}p` : ""}`,
+          quality: q ? `${q}p` : isHls ? "HLS" : "MP4",
+          pageUrl: finalUrl,
+        });
+      }
+    } catch {
+      // JSON parse failed — fall through
+    }
+  }
+  // Fallback: scan for phncdn.com m3u8 / mp4 URLs
+  if (!sources.length) {
+    const re = /https?:\/\/[^"'\s<>()\\]+?\.phncdn\.com\/[^"'\s<>()\\]+?\.(?:m3u8|mp4)[^"'\s<>()\\]*/gi;
+    while ((m = re.exec(html)) !== null) {
+      const u = m[0].replace(/\\\//g, "/");
+      if (seen.has(u)) continue;
+      seen.add(u);
+      const isM3u8 = /\.m3u8/i.test(u);
+      sources.push({
+        url: u,
+        type: isM3u8 ? "m3u8" : "mp4",
+        ext: isM3u8 ? "m3u8" : "mp4",
+        label: isM3u8 ? "HLS" : "MP4",
+        quality: isM3u8 ? "HLS" : "MP4",
+        pageUrl: finalUrl,
+      });
+    }
+  }
+  return sources.length ? sources : null;
+}
+
+/* ------------------------------------------------------------------ */
+/* Site: Eporner (eporner.com) — free porn tube.                       */
+/*   The page embeds a <script type="application/ld+json"> JSON-LD      */
+/*   blob with "contentUrl" pointing to a direct MP4 on                */
+/*   gvideo.eporner.com/{videoId}/{videoId}.mp4 (CORS-open, range).    */
+/*   Also has "embedUrl" and "thumbnailUrl".                            */
+/* ------------------------------------------------------------------ */
+function extractEporner(html: string, finalUrl: string): VideoSource[] | null {
+  const sources: VideoSource[] = [];
+  const seen = new Set<string>();
+  // 1. Parse JSON-LD <script> block (schema.org VideoObject)
+  const ldRe = /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/i;
+  const ldM = html.match(ldRe);
+  if (ldM) {
+    try {
+      const obj = JSON.parse(ldM[1].trim()) as {
+        contentUrl?: string;
+        embedUrl?: string;
+        thumbnailUrl?: string | string[];
+        name?: string;
+        encodingFormat?: string;
+        width?: string | number;
+        height?: string | number;
+      };
+      if (obj.contentUrl && /^https?:/.test(obj.contentUrl) && !seen.has(obj.contentUrl)) {
+        seen.add(obj.contentUrl);
+        const q = obj.height ? `${obj.height}p` : undefined;
+        sources.push({
+          url: obj.contentUrl,
+          type: "mp4",
+          ext: "mp4",
+          label: `MP4${q ? ` · ${q}` : ""}`,
+          quality: q,
+          pageUrl: finalUrl,
+        });
+      }
+      const thumb = Array.isArray(obj.thumbnailUrl) ? obj.thumbnailUrl[0] : obj.thumbnailUrl;
+      if (thumb && /^https?:/.test(thumb) && !seen.has(thumb)) {
+        seen.add(thumb);
+        sources.push({
+          url: thumb,
+          type: "image",
+          ext: "jpg",
+          label: "Poster",
+          quality: "thumbnail",
+          pageUrl: finalUrl,
+        });
+      }
+    } catch {
+      // fall through
+    }
+  }
+  // 2. Fallback: scan for gvideo.eporner.com MP4 URLs
+  if (!sources.length) {
+    const re = /https?:\/\/[^"'\s<>()\\]*?\.?eporner\.com\/[^"'\s<>()\\]+?\.mp4[^"'\s<>()\\]*/gi;
+    while ((m = re.exec(html)) !== null) {
+      if (seen.has(m[0])) continue;
+      seen.add(m[0]);
+      sources.push({
+        url: m[0],
+        type: "mp4",
+        ext: "mp4",
+        label: "MP4",
+        quality: "MP4",
+        pageUrl: finalUrl,
+      });
+    }
+  }
+  return sources.length ? sources : null;
+}
+
+/* ------------------------------------------------------------------ */
+/* Generic helper for captcha-protected hosts: returns a single iframe   */
+/* source pointing to the original URL so the user can open the page in  */
+/* their browser and solve the captcha (Cloudflare Turnstile, hCaptcha,  */
+/* Cloudflare "Just a moment..." interstitial, WASM-based obfuscation,   */
+/* Vite SPA with bot detection) interactively.                           */
+/* ------------------------------------------------------------------ */
+function extractCloudflareIframe(finalUrl: string, label: string): VideoSource[] {
+  return [
+    {
+      url: finalUrl,
+      type: "iframe",
+      ext: "html",
+      label,
+      quality: "Open",
+      pageUrl: finalUrl,
+    },
+  ];
+}
+
 /** Host-based dispatch. Returns sources or null to fall back to generic. */
 export async function trySiteExtractor(
   html: string,
@@ -905,6 +1245,45 @@ export async function trySiteExtractor(
       sources = extractStreamwishFamily(html, finalUrl);
     } else if (host.includes("filemoon") || host.includes("moonq")) {
       sources = extractFilemoon(html, finalUrl);
+    } else if (host.includes("erome")) {
+      // EroMe (erome.com and all mirror domains: dev.erome.com, es.erome.com,
+      // devfr.erome.com, pt.erome.com, etc.) — albums at /a/{id}, individual
+      // videos at /v/{id}. Both contain <source> tags with v\d+.erome.com mp4
+      // URLs.
+      sources = extractErome(html, finalUrl);
+    } else if (host.includes("xhamster")) {
+      // xHamster and all mirror domains (xhamster.com, xhamster2.com,
+      // xhamster.desi, xhamster3.com, xhamster5.com, xhamster18.com,
+      // xhamster.xxx, etc.) — Vue SPA with embedded JSON containing m3u8 URLs.
+      sources = extractXhamster(html, finalUrl);
+    } else if (host.includes("xvideos") || host.includes("xnxx")) {
+      // XVideos + XNXX and all mirror domains (xvideos.com, xvideos2.com,
+      // xvideos3.com, xnxx.com, xnxx2.com, xnxx3.com, etc.) — share the same
+      // html5player.setVideoUrl* / setVideoHLS pattern.
+      sources = extractXvideosFamily(html, finalUrl);
+    } else if (host.includes("pornhub") || host.includes("redtube") || host.includes("youporn")) {
+      // Pornhub network (pornhub.com, redtube.com, youporn.com) and their
+      // mirror domains (pornhubpremium.com, redtube.com.br, etc.) — share the
+      // flashvars_{id} JSON blob with "mediaDefinitions" array.
+      sources = extractPornhubNetwork(html, finalUrl);
+    } else if (host.includes("eporner")) {
+      // Eporner (eporner.com) — JSON-LD <script> with contentUrl pointing to
+      // a direct MP4 on gvideo.eporner.com (CORS-open, range support).
+      sources = extractEporner(html, finalUrl);
+    } else if (host.includes("spankbang")) {
+      // SpankBang — Cloudflare "Just a moment..." interstitial on all pages.
+      // Cannot extract server-side; surface as iframe.
+      sources = extractCloudflareIframe(finalUrl, "Open page · Cloudflare challenge required");
+    } else if (
+      // TrafficStars network — fully Vue SPA with bot detection. The page
+      // returns only an ad-config blob on curl fetch; real video URLs are
+      // loaded via XHR after the SPA boots. Cannot bypass server-side.
+      host.includes("txxx") || host.includes("hdzog") ||
+      host.includes("upornia") || host.includes("tubepornclassic") ||
+      host.includes("voyeurhit") || host.includes("momvids") ||
+      host.includes("shemalez") || host.includes("txxx.tube")
+    ) {
+      sources = extractCloudflareIframe(finalUrl, "Open page · bot-protected SPA");
     }
     // Content-based fallbacks: even when the host is unknown, detect known
     // page structures. This auto-detects new mirror domains and white-labels.
@@ -933,6 +1312,31 @@ export async function trySiteExtractor(
     // run the StreamTape extractor. This auto-detects new mirror domains.
     if (!sources && looksLikeStreamtapePage(html)) {
       sources = extractStreamtape(html, finalUrl);
+    }
+    // Content-based fallback: detect EroMe video pages by their signature
+    // <source src="...erome.com/...mp4" type='video/mp4' label='HD' res='720'>
+    // pattern, even when the host is a mirror we don't have in the dispatch.
+    if (!sources && /<source[^>]+src=["'][^"']+\.erome\.com\/[^"']+\.mp4["']/i.test(html)) {
+      sources = extractErome(html, finalUrl);
+    }
+    // Content-based fallback: detect xvideos/xnxx pages by their signature
+    // html5player.setVideoUrl* / setVideoHLS pattern, even when the host is
+    // a mirror we don't have in the dispatch.
+    if (!sources && /html5player\.setVideo(Url|HLS)\s*\(/i.test(html)) {
+      sources = extractXvideosFamily(html, finalUrl);
+    }
+    // Content-based fallback: detect pornhub/redtube/youporn pages by their
+    // signature "mediaDefinitions" JSON array.
+    if (!sources && /"mediaDefinitions"\s*:\s*\[/.test(html)) {
+      sources = extractPornhubNetwork(html, finalUrl);
+    }
+    // Content-based fallback: detect xhamster pages by their xhcdn.com m3u8 URLs.
+    if (!sources && /[^"'\s<>()\\]+?\.xhcdn\.com\/[^"'\s<>()\\]*?\.m3u8/i.test(html)) {
+      sources = extractXhamster(html, finalUrl);
+    }
+    // Content-based fallback: detect eporner pages by their JSON-LD VideoObject.
+    if (!sources && /<script[^>]*type=["']application\/ld\+json["'][^>]*>[\s\S]*?contentUrl/i.test(html)) {
+      sources = extractEporner(html, finalUrl);
     }
   } catch {
     return null;

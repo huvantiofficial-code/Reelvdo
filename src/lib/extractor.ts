@@ -137,6 +137,39 @@ function isSameUrl(a: string, b: string): boolean {
   }
 }
 
+/** Returns true for hosts that are known to be captcha-protected (Cloudflare
+ *  Turnstile, hCaptcha, "Just a moment..." interstitial, WASM-obfuscated,
+ *  Vite SPA with bot detection) OR fully SPA-rendered (TrafficStars network)
+ *  where curl cannot retrieve the real video page. For these hosts the site
+ *  extractor returns an iframe "open page" source so the user can solve the
+ *  captcha in their browser. We must NOT early-return on status>=400 or
+ *  Cloudflare-challenge detection because the iframe source is still valid. */
+function iframeOkForCaptchaHost(originalUrl: string, finalUrl: string): boolean {
+  const candidates = [originalUrl, finalUrl].filter(Boolean);
+  for (const u of candidates) {
+    let h: string;
+    try {
+      h = new URL(u).hostname.replace(/^www\./, "").toLowerCase();
+    } catch {
+      continue;
+    }
+    if (
+      h.includes("spankbang") ||
+      h.includes("txxx") ||
+      h.includes("hdzog") ||
+      h.includes("upornia") ||
+      h.includes("tubepornclassic") ||
+      h.includes("voyeurhit") ||
+      h.includes("momvids") ||
+      h.includes("shemalez") ||
+      h.includes("txxx.tube")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** De-duplicate sources by URL (ignoring query for grouping where helpful). */
 function dedupe(sources: VideoSource[]): VideoSource[] {
   const seen = new Map<string, VideoSource>();
@@ -266,6 +299,31 @@ export async function extract(rawUrl: string): Promise<ExtractResult> {
     return { ok: false, sources: [], error: "Invalid URL" };
   }
 
+  // For known captcha-protected / fully-SPA hosts (spankbang, txxx/hdzog/
+  // upornia/tubepornclassic/voyeurhit TrafficStars network), skip the page
+  // fetch entirely — curl would either hit a Cloudflare "Just a moment..."
+  // interstitial, a 403, or an empty SPA shell. The site extractor returns
+  // an iframe "open page" source pointing to the original URL so the user
+  // can solve the captcha / wait for the SPA in their own browser.
+  if (iframeOkForCaptchaHost(url, url)) {
+    const host = safeHost(url) || "";
+    try {
+      const siteSources = await trySiteExtractor("", url, host);
+      if (siteSources && siteSources.length) {
+        return {
+          ok: true,
+          sources: siteSources,
+          meta: { host },
+          finalUrl: url,
+          htmlLength: 0,
+          took: Date.now() - start,
+        };
+      }
+    } catch {
+      // fall through to normal flow
+    }
+  }
+
   // Always fetch first and inspect content-type. A URL ending in .mp4 may
   // actually be an HTML watch page (common on video hosts).
   let html = "";
@@ -279,6 +337,26 @@ export async function extract(rawUrl: string): Promise<ExtractResult> {
     status = r.status;
     contentType = r.contentType;
   } catch (e) {
+    // If we know this is a captcha host, return an iframe source anyway
+    // (curl may have crashed on a redirect loop or timeout).
+    if (iframeOkForCaptchaHost(url, url)) {
+      const host = safeHost(url) || "";
+      try {
+        const siteSources = await trySiteExtractor("", url, host);
+        if (siteSources && siteSources.length) {
+          return {
+            ok: true,
+            sources: siteSources,
+            meta: { host },
+            finalUrl: url,
+            htmlLength: 0,
+            took: Date.now() - start,
+          };
+        }
+      } catch {
+        // fall through to error
+      }
+    }
     return {
       ok: false,
       sources: [],
@@ -287,7 +365,7 @@ export async function extract(rawUrl: string): Promise<ExtractResult> {
     };
   }
 
-  if (status >= 400) {
+  if (status >= 400 && !iframeOkForCaptchaHost(url, finalUrl)) {
     return {
       ok: false,
       sources: [],
@@ -297,13 +375,34 @@ export async function extract(rawUrl: string): Promise<ExtractResult> {
   }
 
   // Detect Cloudflare-style bot challenge pages.
-  if (isCloudflareChallenge(html, contentType)) {
+  if (isCloudflareChallenge(html, contentType) && !iframeOkForCaptchaHost(url, finalUrl)) {
     return {
       ok: false,
       sources: [],
       error: "This site is protected by a bot check that blocks automated access.",
       took: Date.now() - start,
     };
+  }
+
+  // If we got a Cloudflare challenge / 4xx on a known captcha host, fall
+  // back to an iframe source (the site extractor will produce one).
+  if ((status >= 400 || isCloudflareChallenge(html, contentType)) && iframeOkForCaptchaHost(url, finalUrl)) {
+    const host = safeHost(finalUrl) || "";
+    try {
+      const siteSources = await trySiteExtractor(html, finalUrl, host);
+      if (siteSources && siteSources.length) {
+        return {
+          ok: true,
+          sources: siteSources,
+          meta: { host },
+          finalUrl,
+          htmlLength: html.length,
+          took: Date.now() - start,
+        };
+      }
+    } catch {
+      // fall through to media-type check
+    }
   }
 
   // If the response is a media file (not HTML), return it as a direct source.

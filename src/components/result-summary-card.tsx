@@ -39,6 +39,15 @@ const KNOWN_SITES: { match: string[]; label: string }[] = [
     label: "streamwish",
   },
   { match: ["filemoon", "moonq"], label: "filemoon" },
+  { match: ["erome"], label: "erome" },
+  { match: ["xhamster"], label: "xhamster" },
+  { match: ["xvideos", "xnxx"], label: "xvideos/xnxx" },
+  { match: ["pornhub"], label: "pornhub" },
+  { match: ["redtube"], label: "redtube" },
+  { match: ["youporn"], label: "youporn" },
+  { match: ["eporner"], label: "eporner" },
+  { match: ["spankbang"], label: "spankbang" },
+  { match: ["txxx", "hdzog", "upornia", "tubepornclassic", "voyeurhit"], label: "txxx-network" },
 ];
 
 function getSiteExtractorName(host: string): string | null {
