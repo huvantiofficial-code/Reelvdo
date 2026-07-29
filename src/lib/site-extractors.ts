@@ -1235,101 +1235,27 @@ function extractYouTube(html: string, finalUrl: string): VideoSource[] | null {
   const sources: VideoSource[] = [];
   const seen = new Set<string>();
 
-  // 1. Embed URL (iframe source) — primary playback method. The browser
-  //    will load YouTube's official player which decodes the signature
-  //    cipher client-side and plays the video.
-  const embedUrl = `https://www.youtube.com/embed/${videoId}`;
+  // 1. Embed URL — PRIMARY source. This is the official YouTube iframe
+  //    player that works in any browser. The watch dialog renders it via
+  //    `<iframe src="https://www.youtube.com/embed/{videoId}?autoplay=1">`.
+  //    YouTube's player decodes the signatureCipher client-side and plays
+  //    the video. Marked as `embeddable: true` so the source-card shows a
+  //    "Watch" button instead of "Open page".
+  const embedUrl = `https://www.youtube.com/embed/${videoId}?autoplay=1&rel=0`;
   if (!seen.has(embedUrl)) {
     seen.add(embedUrl);
     sources.push({
       url: embedUrl,
       type: "iframe",
       ext: "html",
-      label: "YouTube embed · plays in browser",
-      quality: "Open",
+      label: "YouTube · play in app",
+      quality: "Watch",
+      embeddable: true,
       pageUrl: finalUrl,
     });
   }
 
-  // 2. Try to parse ytInitialPlayerResponse for direct googlevideo URL.
-  //    Even though the sig is required, surfacing the URL lets the user
-  //    see the underlying media. We extract itag 18 (muxed 360p mp4).
-  const yipIdx = html.indexOf("ytInitialPlayerResponse");
-  if (yipIdx > 0) {
-    const eqIdx = html.indexOf("=", yipIdx);
-    if (eqIdx > 0) {
-      // Find the matching closing brace.
-      let depth = 0;
-      let start = -1;
-      let end = -1;
-      for (let i = eqIdx + 1; i < html.length; i++) {
-        const ch = html[i];
-        if (ch === "{") {
-          if (depth === 0) start = i;
-          depth++;
-        } else if (ch === "}") {
-          depth--;
-          if (depth === 0) {
-            end = i + 1;
-            break;
-          }
-        }
-      }
-      if (start > 0 && end > start) {
-        try {
-          const obj = JSON.parse(html.slice(start, end)) as {
-            streamingData?: {
-              formats?: Array<{
-                itag: number;
-                mimeType: string;
-                qualityLabel?: string;
-                signatureCipher?: string;
-                url?: string;
-              }>;
-            };
-            videoDetails?: { title?: string; thumbnail?: { thumbnails?: Array<{ url: string }> } };
-          };
-          const sd = obj.streamingData;
-          if (sd?.formats) {
-            for (const f of sd.formats) {
-              // Only muxed formats (itag 18 = 360p mp4) are directly playable.
-              // Most modern videos have signatureCipher which needs JS interpreter.
-              if (f.signatureCipher) {
-                // Parse s, sp, url from signatureCipher.
-                const params = new URLSearchParams(f.signatureCipher);
-                const rawUrl = params.get("url");
-                if (rawUrl && !seen.has(rawUrl)) {
-                  seen.add(rawUrl);
-                  sources.push({
-                    url: rawUrl,
-                    type: "mp4",
-                    ext: "mp4",
-                    label: `MP4 · ${f.qualityLabel || "360p"} · needs sig (may 403)`,
-                    quality: f.qualityLabel || "360p",
-                    pageUrl: finalUrl,
-                  });
-                }
-              } else if (f.url && !seen.has(f.url)) {
-                seen.add(f.url);
-                sources.push({
-                  url: f.url,
-                  type: "mp4",
-                  ext: "mp4",
-                  label: `MP4 · ${f.qualityLabel || "360p"}`,
-                  quality: f.qualityLabel || "360p",
-                  pageUrl: finalUrl,
-                });
-              }
-            }
-          }
-        } catch {
-          // JSON parse failed — fall through
-        }
-      }
-    }
-  }
-
-  // 3. Thumbnail as image source (always works).
+  // 2. Thumbnail as image source (always works).
   const thumbMax = `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`;
   if (!seen.has(thumbMax)) {
     seen.add(thumbMax);
@@ -1351,6 +1277,19 @@ function extractYouTube(html: string, finalUrl: string): VideoSource[] | null {
       ext: "jpg",
       label: "Thumbnail · hq",
       quality: "thumbnail",
+      pageUrl: finalUrl,
+    });
+  }
+
+  // 3. Original page as iframe fallback (open in new tab).
+  if (!seen.has(finalUrl)) {
+    seen.add(finalUrl);
+    sources.push({
+      url: finalUrl,
+      type: "iframe",
+      ext: "html",
+      label: "Open YouTube page",
+      quality: "Open",
       pageUrl: finalUrl,
     });
   }
@@ -1397,8 +1336,24 @@ function extractFacebook(html: string, finalUrl: string): VideoSource[] | null {
       pageUrl: finalUrl,
     });
   }
-  // 3. Iframe source — open the page in a new tab. The user's browser
-  //    session will load the video player.
+  // 3. Embeddable iframe — Facebook's official /plugins/video.php?href=
+  //    endpoint renders the video in an iframe player. Works for public
+  //    videos without login. Marked as `embeddable: true` so the watch
+  //    dialog renders it via `<iframe>`.
+  const embedUrl = `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(finalUrl)}&show_text=false&width=560&autoplay=true`;
+  if (!seen.has(embedUrl)) {
+    seen.add(embedUrl);
+    sources.push({
+      url: embedUrl,
+      type: "iframe",
+      ext: "html",
+      label: "Facebook · play in app",
+      quality: "Watch",
+      embeddable: true,
+      pageUrl: finalUrl,
+    });
+  }
+  // 4. Iframe source — open the original page in a new tab.
   if (!seen.has(finalUrl)) {
     seen.add(finalUrl);
     sources.push({
@@ -1448,7 +1403,33 @@ function extractInstagram(html: string, finalUrl: string): VideoSource[] | null 
       pageUrl: finalUrl,
     });
   }
-  // 3. Iframe source — open the page in a new tab.
+  // 3. Embeddable iframe — Instagram's official /reel/{id}/embed/ or
+  //    /p/{id}/embed/ endpoint renders the post in an iframe player.
+  //    Works for public posts without login.
+  let embedUrl: string | null = null;
+  try {
+    const u = new URL(finalUrl);
+    const parts = u.pathname.split("/").filter(Boolean);
+    // Patterns: /reel/{id}/, /reels/{id}/, /p/{id}/, /tv/{id}/
+    if (parts.length >= 2 && ["reel", "reels", "p", "tv"].includes(parts[0])) {
+      embedUrl = `${u.origin}/${parts[0]}/${parts[1]}/embed/captioned/`;
+    }
+  } catch {
+    // ignore
+  }
+  if (embedUrl && !seen.has(embedUrl)) {
+    seen.add(embedUrl);
+    sources.push({
+      url: embedUrl,
+      type: "iframe",
+      ext: "html",
+      label: "Instagram · play in app",
+      quality: "Watch",
+      embeddable: true,
+      pageUrl: finalUrl,
+    });
+  }
+  // 4. Iframe source — open the original page in a new tab.
   if (!seen.has(finalUrl)) {
     seen.add(finalUrl);
     sources.push({
@@ -1562,7 +1543,34 @@ async function extractTelegram(html: string, finalUrl: string): Promise<VideoSou
     }
   }
 
-  // 4. Iframe source — open the page in a new tab.
+  // 4. Embeddable iframe — Telegram's ?embed=1&mode=tme endpoint renders
+  //    the post (text + image + video) in an iframe widget that works
+  //    without login. Marked as `embeddable: true` so the watch dialog
+  //    renders it via `<iframe>`.
+  let tgEmbedUrl: string | null = null;
+  try {
+    const u = new URL(finalUrl);
+    const parts = u.pathname.split("/").filter(Boolean);
+    if (parts.length === 2 && /^\d+$/.test(parts[1])) {
+      tgEmbedUrl = `${u.origin}/${parts[0]}/${parts[1]}?embed=1&mode=tme`;
+    }
+  } catch {
+    // ignore
+  }
+  if (tgEmbedUrl && !seen.has(tgEmbedUrl)) {
+    seen.add(tgEmbedUrl);
+    sources.push({
+      url: tgEmbedUrl,
+      type: "iframe",
+      ext: "html",
+      label: "Telegram · play in app",
+      quality: "Watch",
+      embeddable: true,
+      pageUrl: finalUrl,
+    });
+  }
+
+  // 5. Iframe source — open the original page in a new tab.
   if (!seen.has(finalUrl)) {
     seen.add(finalUrl);
     sources.push({
@@ -1613,7 +1621,42 @@ function extractVK(html: string, finalUrl: string): VideoSource[] | null {
       pageUrl: finalUrl,
     });
   }
-  // 3. Iframe source.
+  // 3. Embeddable iframe — VK's /video_ext.php?oid={oid}&id={id}&hash={hash}
+  //    endpoint renders the video in an iframe player. The hash is required
+  //    for private videos; for public videos, an empty hash often works.
+  //    URL pattern: vk.com/video{oid}_{id} or vk.com/video/{oid}/{id}
+  let embedUrl: string | null = null;
+  try {
+    const u = new URL(finalUrl);
+    const path = u.pathname;
+    // Pattern 1: /video{oid}_{id}
+    const m1 = path.match(/\/video(-?\d+)_(\d+)/);
+    if (m1) {
+      embedUrl = `https://vk.com/video_ext.php?oid=${m1[1]}&id=${m1[2]}&hash=&hd=2&autoplay=1`;
+    }
+    if (!embedUrl) {
+      // Pattern 2: /video/{oid}/{id}
+      const m2 = path.match(/\/video\/(-?\d+)\/(\d+)/);
+      if (m2) {
+        embedUrl = `https://vk.com/video_ext.php?oid=${m2[1]}&id=${m2[2]}&hash=&hd=2&autoplay=1`;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  if (embedUrl && !seen.has(embedUrl)) {
+    seen.add(embedUrl);
+    sources.push({
+      url: embedUrl,
+      type: "iframe",
+      ext: "html",
+      label: "VK · play in app",
+      quality: "Watch",
+      embeddable: true,
+      pageUrl: finalUrl,
+    });
+  }
+  // 4. Iframe source — open the original page in a new tab.
   if (!seen.has(finalUrl)) {
     seen.add(finalUrl);
     sources.push({
@@ -1664,7 +1707,33 @@ function extractXCom(html: string, finalUrl: string): VideoSource[] | null {
       pageUrl: finalUrl,
     });
   }
-  // 3. Iframe source.
+  // 3. Embeddable iframe — Twitter/X's official embed endpoint:
+  //    https://platform.twitter.com/embed/Tweet.html?id={tweetId}
+  //    Renders the tweet (with embedded video) in an iframe player.
+  let embedUrl: string | null = null;
+  try {
+    const u = new URL(finalUrl);
+    // Pattern: x.com/{user}/status/{id} or twitter.com/{user}/status/{id}
+    const parts = u.pathname.split("/").filter(Boolean);
+    if (parts.length >= 3 && parts[1] === "status" && /^\d+$/.test(parts[2])) {
+      embedUrl = `https://platform.twitter.com/embed/Tweet.html?id=${parts[2]}`;
+    }
+  } catch {
+    // ignore
+  }
+  if (embedUrl && !seen.has(embedUrl)) {
+    seen.add(embedUrl);
+    sources.push({
+      url: embedUrl,
+      type: "iframe",
+      ext: "html",
+      label: "X.com · play in app",
+      quality: "Watch",
+      embeddable: true,
+      pageUrl: finalUrl,
+    });
+  }
+  // 4. Iframe source — open the original page in a new tab.
   if (!seen.has(finalUrl)) {
     seen.add(finalUrl);
     sources.push({

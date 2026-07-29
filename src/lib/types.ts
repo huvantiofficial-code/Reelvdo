@@ -32,6 +32,17 @@ export interface VideoSource {
   pageUrl?: string;
   /** Original filename when known (used for download Content-Disposition). */
   filename?: string;
+  /** When true, this is a direct media file that should be loaded by the
+   *  browser WITHOUT going through the server proxy. Used for IP-bound CDN
+   *  tokens (cloudatacdn, krakencloud, etc.). */
+  direct?: boolean;
+  /** When true, this iframe URL is meant to be played INLINE in the watch
+   *  dialog via an `<iframe>` element (e.g. YouTube /embed/{id}, Facebook
+   *  /plugins/video.php?href=, Instagram /reel/{id}/embed/, Telegram
+   *  ?embed=1, VK video_ext.php, Twitter platform.twitter.com/embed).
+   *  When false (default), an iframe source is treated as a captcha-protected
+   *  page that the user must open in a new tab. */
+  embeddable?: boolean;
 }
 
 export interface ExtractMeta {

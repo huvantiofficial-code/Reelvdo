@@ -108,8 +108,18 @@ function qualityRank(q?: string): number {
   return 999;
 }
 
+/** Sort sources by quality. Embeddable iframes (YouTube /embed/, FB plugin,
+ *  IG embed, Telegram embed, VK video_ext, Twitter embed) are preferred as
+ *  the "best" source for social platforms since they're the primary playback
+ *  method. Captcha-protected iframes (no embeddable flag) are deprioritized. */
 function sortByQuality(srcs: VideoSource[], desc = true): VideoSource[] {
   const sorted = [...srcs].sort((a, b) => {
+    // Embeddable iframes always come first (they're the playable source for
+    // social platforms).
+    const aEmbed = a.embeddable ? 1 : 0;
+    const bEmbed = b.embeddable ? 1 : 0;
+    if (aEmbed !== bEmbed) return bEmbed - aEmbed;
+    // Then by quality rank.
     const ra = qualityRank(a.quality || a.label);
     const rb = qualityRank(b.quality || b.label);
     return desc ? ra - rb : rb - ra;

@@ -173,6 +173,14 @@ export function SourceCard({ source, index, onWatch, onDownloadProgress, poster,
   // playmogo.com DoodStream clones). We can't preview/download them
   // server-side — the user must open the page in a new tab.
   const isIframe = source.type === "iframe";
+  // Embeddable iframes are meant to be played inline in the watch dialog
+  // via `<iframe src="...">` (e.g. YouTube /embed/{id}, FB /plugins/video.php,
+  // Instagram /reel/{id}/embed/, Telegram ?embed=1, VK video_ext.php,
+  // Twitter platform.twitter.com/embed). These get a "Watch" button.
+  // Non-embeddable iframes are captcha-protected pages that the user must
+  // open in a new tab — they get an "Open page" button only.
+  const isEmbeddable = isIframe && source.embeddable === true;
+  const isCaptchaIframe = isIframe && !isEmbeddable;
   // For iframe sources, the label/quality tells us which page this is
   // (watch vs download). Use it to pick the right button label.
   const isWatchPage = isIframe && (source.quality === "Watch" || /watch/i.test(source.label || ""));
@@ -296,10 +304,16 @@ export function SourceCard({ source, index, onWatch, onDownloadProgress, poster,
                 .{source.ext}
               </span>
             )}
-            {isIframe && (
+            {isCaptchaIframe && (
               <span className="inline-flex items-center gap-0.5 rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600 dark:text-amber-400">
                 <ShieldAlert className="h-2.5 w-2.5" />
                 Captcha
+              </span>
+            )}
+            {isEmbeddable && (
+              <span className="inline-flex items-center gap-0.5 rounded-md bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
+                <Play className="h-2.5 w-2.5" />
+                Embed
               </span>
             )}
           </div>
@@ -317,17 +331,22 @@ export function SourceCard({ source, index, onWatch, onDownloadProgress, poster,
               </kbd>
             )}
           </div>
-          {isIframe && (
+          {isCaptchaIframe && (
             <div className="mt-1.5 text-[10px] leading-tight text-amber-600 dark:text-amber-400/90">
               Site requires interactive captcha. Open in a new tab to watch or download.
+            </div>
+          )}
+          {isEmbeddable && (
+            <div className="mt-1.5 text-[10px] leading-tight text-emerald-600 dark:text-emerald-400/90">
+              Official embed player — plays inline in the watch dialog.
             </div>
           )}
         </div>
       </div>
 
       <div className="flex shrink-0 items-center gap-1">
-        {isIframe ? (
-          // For iframe (captcha-protected page) sources, render a single
+        {isCaptchaIframe ? (
+          // For captcha-protected iframe pages, render a single
           // prominent "Open page" button that opens the URL in a new tab.
           // No Watch/Download buttons — those would fail because the URL is
           // an HTML page, not a media file.
@@ -348,6 +367,38 @@ export function SourceCard({ source, index, onWatch, onDownloadProgress, poster,
               <span className="sm:hidden">{isWatchPage ? "Watch" : "Download"}</span>
             </a>
           </Button>
+        ) : isEmbeddable ? (
+          // For embeddable iframe sources (YouTube embed, FB plugin, IG embed,
+          // Telegram embed, VK video_ext, Twitter embed), render a "Watch"
+          // button that opens the watch dialog with an inline `<iframe>`,
+          // plus an "Open" button to open the embed URL in a new tab.
+          <>
+            <Button
+              size="sm"
+              variant="default"
+              onClick={onWatch}
+              className="gap-1.5 btn-press shadow-sm"
+            >
+              <Play className="h-3.5 w-3.5 fill-current" />
+              Watch
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              asChild
+              className="gap-1.5 btn-press"
+            >
+              <a
+                href={source.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Open embed in new tab"
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Open</span>
+              </a>
+            </Button>
+          </>
         ) : (
           <>
             <Button
@@ -410,8 +461,8 @@ export function SourceCard({ source, index, onWatch, onDownloadProgress, poster,
             </Tooltip>
           </TooltipProvider>
         )}
-        {/* Copy embed code — hidden for iframe sources (not embeddable) */}
-        {!isIframe && (
+        {/* Copy embed code — hidden for captcha iframe sources (not embeddable) */}
+        {!isCaptchaIframe && (
           <TooltipProvider delayDuration={300}>
             <Tooltip>
               <TooltipTrigger asChild>

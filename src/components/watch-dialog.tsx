@@ -95,6 +95,7 @@ export function WatchDialog({ source, open, onOpenChange, title, poster, onDownl
             poster={poster}
             title={title || source.quality}
             pageUrl={source.pageUrl}
+            embeddable={source.embeddable}
           />
         </div>
 

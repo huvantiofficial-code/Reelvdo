@@ -10,27 +10,46 @@ interface PlayerProps {
   poster?: string;
   title?: string;
   pageUrl?: string;
+  /** When true, the URL is an embeddable iframe (YouTube /embed/, FB
+   *  /plugins/video.php, IG /reel/{id}/embed/, Telegram ?embed=1, VK
+   *  video_ext.php, Twitter platform.twitter.com/embed). Render via
+   *  `<iframe>` instead of `<video>`. */
+  embeddable?: boolean;
 }
 
 type LoadState = "loading" | "ready" | "error";
 
-export function VideoPlayer({ url, type, poster, title, pageUrl }: PlayerProps) {
+export function VideoPlayer({ url, type, poster, title, pageUrl, embeddable }: PlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
   const [state, setState] = useState<LoadState>("loading");
   const [errMsg, setErrMsg] = useState("");
+
+  // For embeddable iframes, render an `<iframe>` directly. The URL is the
+  // official embed endpoint (YouTube /embed/, FB /plugins/video.php, etc.)
+  // which serves an HTML player. We don't proxy it — the iframe loads the
+  // embed URL directly from the host (which sets its own cookies/CORS).
+  const isEmbeddableIframe = embeddable === true && type === "iframe";
 
   // Resolve the playable URL through our proxy/playlist endpoints.
   // Pass an explicit `kind` hint so the backend treats URLs without the
   // standard .m3u8/.mpd extension as playlists (e.g. playmate.to uses
   // .txt for HLS master/variant playlists).
-  const playable = (() => {
-    const page = pageUrl ? `&page=${encodeURIComponent(pageUrl)}` : "";
-    if (type === "m3u8") return `/api/playlist?url=${encodeURIComponent(url)}${page}&kind=m3u8`;
-    if (type === "mpd") return `/api/playlist?url=${encodeURIComponent(url)}${page}&kind=mpd`;
-    return `/api/proxy?url=${encodeURIComponent(url)}${page}`;
-  })();
+  // NOTE: Only computed when NOT an embeddable iframe (the iframe path
+  // doesn't need a proxy URL).
+  const playable = isEmbeddableIframe
+    ? ""
+    : (() => {
+        const page = pageUrl ? `&page=${encodeURIComponent(pageUrl)}` : "";
+        if (type === "m3u8") return `/api/playlist?url=${encodeURIComponent(url)}${page}&kind=m3u8`;
+        if (type === "mpd") return `/api/playlist?url=${encodeURIComponent(url)}${page}&kind=mpd`;
+        return `/api/proxy?url=${encodeURIComponent(url)}${page}`;
+      })();
 
   useEffect(() => {
+    // Skip the video-element effect for embeddable iframes — they render
+    // via `<iframe>` and don't need hls.js/dash.js/proxy setup.
+    if (isEmbeddableIframe) return;
     const video = videoRef.current;
     if (!video) return;
     setState("loading");
@@ -112,7 +131,35 @@ export function VideoPlayer({ url, type, poster, title, pageUrl }: PlayerProps) 
         }
       }
     };
-  }, [url, type]);
+  }, [url, type, isEmbeddableIframe, playable]);
+
+  // Embeddable iframe render path.
+  if (isEmbeddableIframe) {
+    return (
+      <div className="relative w-full overflow-hidden rounded-md bg-black">
+        <div className="aspect-video w-full">
+          <iframe
+            ref={iframeRef}
+            src={url}
+            title={title || "Embedded player"}
+            className="h-full w-full border-0 bg-black"
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
+            allowFullScreen
+            referrerPolicy="strict-origin-when-cross-origin"
+            onLoad={() => setState("ready")}
+          />
+        </div>
+        {state === "loading" && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/40">
+            <div className="flex items-center gap-2 text-white/90 text-sm">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span>Loading embed…</span>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="relative w-full overflow-hidden rounded-md bg-black">
