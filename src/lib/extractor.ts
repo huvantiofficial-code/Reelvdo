@@ -162,7 +162,23 @@ function iframeOkForCaptchaHost(originalUrl: string, finalUrl: string): boolean 
       h.includes("voyeurhit") ||
       h.includes("momvids") ||
       h.includes("shemalez") ||
-      h.includes("txxx.tube")
+      h.includes("txxx.tube") ||
+      h.includes("voe.sx") ||
+      h.includes("voeunblk") ||
+      h.includes("voeunblock") ||
+      h.includes("voe-unblock") ||
+      h.includes("upstream.to") ||
+      h.includes("send.cm") ||
+      h.includes("send.now") ||
+      h.includes("vidmoly") ||
+      h.includes("streamsb") ||
+      h.includes("streamlare") ||
+      h.includes("sbface") ||
+      h.includes("sbplay") ||
+      h.includes("krakenfiles") ||
+      h.includes("krakencloud") ||
+      h.includes("upfiles") ||
+      h.includes("upfilesgo")
     ) {
       return true;
     }

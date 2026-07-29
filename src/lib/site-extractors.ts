@@ -822,8 +822,9 @@ function extractDoodstreamClone(html: string, finalUrl: string): VideoSource[] |
  *  share the identical page structure (decoy #ideoooolink/#captchalink/
  *  #norobotlink divs + a JS literal with the real &expires=&ip=&token=
  *  triple that gets .substring()'d at runtime), so the same extractor works
- *  for all of them. Known clones: streamtape.com, tpead.net, streamtape.to,
- *  stape.cc, streamta.pe, stpe.net, tapeplayers.net, etc. */
+ *  for all of them. Known clones: streamtape.com, streamtape.to, streamtape.net,
+ *  tpead.net, stape.cc, streamta.pe, stpe.net, tapeplayers.net, shavetape.cash,
+ *  tapetv.fr, tapeonline.net, etc. */
 function isStreamtapeFamily(host: string): boolean {
   const h = host.toLowerCase();
   return (
@@ -834,7 +835,18 @@ function isStreamtapeFamily(host: string): boolean {
     h === "stpe.net" ||
     h.endsWith(".stpe.net") ||
     h.includes("streamta.pe") ||
-    h.includes("tapeplayers")
+    h.includes("tapeplayers") ||
+    h.includes("shavetape") ||
+    h.includes("tapetv") ||
+    h.includes("tapeonline") ||
+    // Common StreamTape CDN clone domain suffixes that show the same page
+    h.includes("stapewithamazon") ||
+    h.includes("stape.club") ||
+    h.includes("stape.video") ||
+    h.includes("tapeprotect") ||
+    h.includes("streamtape") ||
+    h.includes("strtape") ||
+    h.includes("tapeads")
   );
 }
 
@@ -1203,26 +1215,52 @@ export async function trySiteExtractor(
       sources = await extractFirestream(html, finalUrl);
     } else if (host.includes("playmate")) {
       sources = await extractPlaymate(finalUrl);
-    } else if (host.includes("vidara")) {
-      sources = await extractVidara(html, finalUrl);
-    } else if (host.includes("odysseusa")) {
-      const fc = finalUrl.match(/\/e\/([^/?#]+)/);
-      if (fc) sources = await extractOdysseusa(fc[1], new URL(finalUrl).origin, finalUrl);
-    } else if (host.includes("mixdrop") || host.includes("miiiixdrop") || host.includes("mixdroop")) {
+    } else if (host.includes("vidara") || host.includes("odysseusa")) {
+      // Vidara + Odysseusa share the same codebase (Vue SPA + /api/stream
+      // POST endpoint). Their mirror domains include vidara.to, vidara.com,
+      // odysseusa.cc, odysseusa.to, etc.
+      if (host.includes("odysseusa")) {
+        const fc = finalUrl.match(/\/e\/([^/?#]+)/);
+        if (fc) sources = await extractOdysseusa(fc[1], new URL(finalUrl).origin, finalUrl);
+      } else {
+        sources = await extractVidara(html, finalUrl);
+      }
+    } else if (
+      // MixDrop family — covers mixdrop.co, mixdrop.to, mixdrop.sx, mixdrop.bz,
+      // mixdrop.ch, mixdrop.gl, mixdrop.nu, mixdrop.vc, mixdrop.ag, miiiixdrop.com,
+      // mixdroop.co, mixdroop.bz, mixdroop.ws, mixdroop.nl, and many other
+      // mirror domains. All share the same packer + /f/{id} page structure.
+      host.includes("mixdrop") || host.includes("miiiixdrop") ||
+      host.includes("mixdroop") || host.includes("mixdroup")
+    ) {
       sources = await extractMixdrop(html, finalUrl);
     } else if (isStreamtapeFamily(host)) {
       sources = extractStreamtape(html, finalUrl);
-    } else if (host.includes("doodstream") || host.includes("dood.so") || host.includes("dood.")) {
+    } else if (
+      // DoodStream family — covers doodstream.com, dood.so, dood.yt,
+      // doodstream.co, dood.li, doodstream.watch, dood.pm, dood.ws, dood.rust,
+      // and all other "dood.*" mirror domains.
+      host.includes("doodstream") || host.includes("dood.so") ||
+      host.includes("dood.yt") || host.includes("dood.") ||
+      host.includes("doodpm") || host.includes("doodhq") ||
+      host.includes("doodmovies") || host.includes("doodwatch")
+    ) {
       sources = await extractDoodstream(html, finalUrl);
     } else if (
       // Morencius / VidHide embed hosts. Many white-label front-ends
       // (minochinos.com, etc.) iframe to these — when the user pastes the
       // embed URL directly, dispatch here. When the user pastes the front-end
       // URL, the content-based fallback below catches it via the packer.
+      // Expanded to cover the many VidHide white-label mirror domains.
       host.includes("morencius") || host.includes("vidhide") ||
       host.includes("minochinos") || host.includes("playmogo") ||
       host.includes("mosevura") || host.includes("dramiyos") ||
-      host.includes("earnvids")
+      host.includes("earnvids") || host.includes("vidhidepro") ||
+      host.includes("vidhidelink") || host.includes("vidhidecity") ||
+      host.includes("vidshide") || host.includes("vidshost") ||
+      host.includes("mexash") || host.includes("fileabc") ||
+      host.includes("tachist") || host.includes("indobaliu") ||
+      host.includes("boodstream") || host.includes("vidoo")
     ) {
       // DoodStream clone (playmogo.com, etc.) — detect via HTML content.
       if (
@@ -1238,12 +1276,27 @@ export async function trySiteExtractor(
         sources = extractMorenciusFamily(html, finalUrl);
       }
     } else if (
+      // StreamWish / Swhoi / FileLions / VidPlay family — covers streamwish.to,
+      // swhoi.com, filelions.to, filelions.com, embedwish.com, awish.pro,
+      // mhdflix.in, vidplay.stream, vidplay.site, player.akamai.net,
+      // streamwish.com (=StreamHG), supervideo.tv, streamhub.to, megacloud.to,
+      // kalelmeh.com, moviehab.fun, vidgomax.com, yzzzz.stream, streamcloud.cc
       host.includes("streamwish") || host.includes("swhoi") ||
       host.includes("filelions") || host.includes("filelion") ||
-      host.includes("streamwish.") || host.includes("embedwish")
+      host.includes("embedwish") || host.includes("awish") ||
+      host.includes("mhdflix") || host.includes("vidplay") ||
+      host.includes("supervideo") || host.includes("streamhub") ||
+      host.includes("megacloud") || host.includes("kalelmeh") ||
+      host.includes("moviehab") || host.includes("vidgomax") ||
+      host.includes("player.akamai") || host.includes("yzzzz") ||
+      host.includes("streamcloud") || host.includes("streamhg")
     ) {
       sources = extractStreamwishFamily(html, finalUrl);
-    } else if (host.includes("filemoon") || host.includes("moonq")) {
+    } else if (
+      // FileMoon / MoonQ family — covers filemoon.sx, filemoon.to, moonq.com,
+      // moonq.cc, filemoon.cc, and other moon/filemoon variants.
+      host.includes("filemoon") || host.includes("moonq")
+    ) {
       sources = extractFilemoon(html, finalUrl);
     } else if (host.includes("erome")) {
       // EroMe (erome.com and all mirror domains: dev.erome.com, es.erome.com,
@@ -1284,6 +1337,46 @@ export async function trySiteExtractor(
       host.includes("shemalez") || host.includes("txxx.tube")
     ) {
       sources = extractCloudflareIframe(finalUrl, "Open page · bot-protected SPA");
+    } else if (
+      // VOE family — VOE.sx and unblock mirror domains (voeunblk1.com,
+      // voeunblk2.com, voeunblock1.net, voeunblock2.net, voe-unblock.com,
+      // voeunblk3.com, etc.) — heavily obfuscated JS-based page. Surface as
+      // iframe so the user's browser can run the obfuscated player code.
+      host.includes("voe.sx") || host.includes("voeunblk") ||
+      host.includes("voeunblock") || host.includes("voe-unblock")
+    ) {
+      sources = extractCloudflareIframe(finalUrl, "Open VOE page (JS-protected)");
+    } else if (
+      // Upstream — upstream.to and mirror domains. Cloudflare-protected.
+      host.includes("upstream.to") || host.includes("upstream")
+    ) {
+      sources = extractCloudflareIframe(finalUrl, "Open page · Cloudflare challenge required");
+    } else if (
+      // Send.cm — file hosting site. Cloudflare-protected.
+      host.includes("send.cm") || host.includes("send.now")
+    ) {
+      sources = extractCloudflareIframe(finalUrl, "Open page · Cloudflare challenge required");
+    } else if (
+      // Vidmoly — video hosting. Bot-protected.
+      host.includes("vidmoly")
+    ) {
+      sources = extractCloudflareIframe(finalUrl, "Open page · bot-protected");
+    } else if (
+      // StreamSB / StreamLare — video hosting. Bot-protected.
+      host.includes("streamsb") || host.includes("streamlare") ||
+      host.includes("sbface") || host.includes("sbplay")
+    ) {
+      sources = extractCloudflareIframe(finalUrl, "Open page · bot-protected");
+    } else if (
+      // KrakenFiles — Cloudflare Turnstile on download POST endpoint.
+      host.includes("krakenfiles") || host.includes("krakencloud")
+    ) {
+      sources = extractCloudflareIframe(finalUrl, "Open page · Turnstile captcha required");
+    } else if (
+      // UpFiles — Cloudflare-protected with counter + Turnstile.
+      host.includes("upfiles") || host.includes("upfilesgo")
+    ) {
+      sources = extractCloudflareIframe(finalUrl, "Open page · Turnstile captcha required");
     }
     // Content-based fallbacks: even when the host is unknown, detect known
     // page structures. This auto-detects new mirror domains and white-labels.
