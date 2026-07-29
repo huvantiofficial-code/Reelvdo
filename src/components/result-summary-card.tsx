@@ -58,6 +58,13 @@ const KNOWN_SITES: { match: string[]; label: string }[] = [
   { match: ["krakenfiles", "krakencloud"], label: "krakenfiles" },
   { match: ["upfiles", "upfilesgo"], label: "upfiles" },
   { match: ["morencius", "vidhide", "vidhidepro", "vidhidelink", "vidhidecity", "vidshide", "vidshost", "mexash", "fileabc", "tachist", "mosevura", "dramiyos", "earnvids", "minochinos", "playmogo", "indobaliu", "boodstream", "vidoo"], label: "morencius" },
+  { match: ["youtube.com", "youtu.be", "youtube-nocookie"], label: "youtube" },
+  { match: ["facebook.com", "fb.watch", "fb.com"], label: "facebook" },
+  { match: ["instagram.com", "instagr.am"], label: "instagram" },
+  { match: ["t.me", "telegram.me", "telegram.org"], label: "telegram" },
+  { match: ["vk.com", "vkontakte.ru", "userapi.com"], label: "vk" },
+  { match: ["x.com", "twitter.com", "twimg.com"], label: "x-twitter" },
+  { match: ["threads.net", "threads.com"], label: "threads" },
 ];
 
 function getSiteExtractorName(host: string): string | null {

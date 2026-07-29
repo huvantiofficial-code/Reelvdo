@@ -139,11 +139,12 @@ function isSameUrl(a: string, b: string): boolean {
 
 /** Returns true for hosts that are known to be captcha-protected (Cloudflare
  *  Turnstile, hCaptcha, "Just a moment..." interstitial, WASM-obfuscated,
- *  Vite SPA with bot detection) OR fully SPA-rendered (TrafficStars network)
- *  where curl cannot retrieve the real video page. For these hosts the site
- *  extractor returns an iframe "open page" source so the user can solve the
- *  captcha in their browser. We must NOT early-return on status>=400 or
- *  Cloudflare-challenge detection because the iframe source is still valid. */
+ *  Vite SPA with bot detection) OR fully SPA-rendered (TrafficStars network,
+ *  Facebook/Instagram/VK/X.com/Threads) where curl cannot retrieve the real
+ *  video page. For these hosts the site extractor returns an iframe "open
+ *  page" source so the user can solve the captcha in their browser. We must
+ *  NOT early-return on status>=400 or Cloudflare-challenge detection because
+ *  the iframe source is still valid. */
 function iframeOkForCaptchaHost(originalUrl: string, finalUrl: string): boolean {
   const candidates = [originalUrl, finalUrl].filter(Boolean);
   for (const u of candidates) {
@@ -178,7 +179,22 @@ function iframeOkForCaptchaHost(originalUrl: string, finalUrl: string): boolean 
       h.includes("krakenfiles") ||
       h.includes("krakencloud") ||
       h.includes("upfiles") ||
-      h.includes("upfilesgo")
+      h.includes("upfilesgo") ||
+      // Social platforms — login-walled or SPA-rendered. The site extractor
+      // returns iframe + og:image sources regardless of curl success.
+      h.includes("facebook.com") ||
+      h.includes("fb.watch") ||
+      h.includes("instagram.com") ||
+      h.includes("threads.net") ||
+      h.includes("threads.com") ||
+      h === "x.com" ||
+      h.endsWith(".x.com") ||
+      h.includes("twitter.com") ||
+      h.includes("vk.com") ||
+      h.includes("vkontakte.ru") ||
+      h === "t.me" ||
+      h.endsWith(".t.me") ||
+      h.includes("telegram.me")
     ) {
       return true;
     }

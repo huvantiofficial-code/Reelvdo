@@ -1182,6 +1182,554 @@ function extractEporner(html: string, finalUrl: string): VideoSource[] | null {
 }
 
 /* ------------------------------------------------------------------ */
+/* Site: YouTube (youtube.com, youtu.be, m.youtube.com) — the world's   */
+/*   largest video platform. The watch page embeds ytInitialPlayerResponse*/
+/*   JSON with streamingData.formats (muxed) and streamingData.          */
+/*   adaptiveFormats (video+audio only). Modern YouTube serves all      */
+/*   formats with a "signatureCipher" param that requires running the    */
+/*   page's obfuscated JS interpreter to decode the sig. We can't run    */
+/*   JS server-side, so the URL alone (without sig) returns 403.         */
+/*   Strategy:                                                          */
+/*   1. Surface the embed URL (https://www.youtube.com/embed/{videoId})  */
+/*      as an iframe source — user's browser plays it via YouTube's own  */
+/*      player (which decodes the sig client-side).                      */
+/*   2. Surface the max-res thumbnail as an image source.                */
+/*   3. Surface the raw muxed googlevideo URL (itag 18, 360p) WITHOUT    */
+/*      the sig — this will 403 in the proxy but is shown for the user   */
+/*      to copy if they want to try it.                                  */
+/* ------------------------------------------------------------------ */
+function extractYouTube(html: string, finalUrl: string): VideoSource[] | null {
+  // Extract video ID from URL or page.
+  let videoId: string | null = null;
+  try {
+    const u = new URL(finalUrl);
+    if (u.hostname.includes("youtu.be")) {
+      videoId = u.pathname.split("/").filter(Boolean)[0] || null;
+    } else if (u.searchParams.has("v")) {
+      videoId = u.searchParams.get("v");
+    } else if (u.pathname.startsWith("/embed/")) {
+      videoId = u.pathname.split("/")[2] || null;
+    } else if (u.pathname.startsWith("/shorts/")) {
+      videoId = u.pathname.split("/")[2] || null;
+    } else if (u.pathname.startsWith("/watch/")) {
+      videoId = u.pathname.split("/")[2] || null;
+    }
+  } catch {
+    // ignore
+  }
+  // Fallback: extract from canonical link or og:url in HTML.
+  if (!videoId) {
+    const canonM = html.match(/<link\s+rel="canonical"\s+href="https?:\/\/(?:www\.)?youtube\.com\/watch\?v=([a-zA-Z0-9_-]{11})"/i);
+    if (canonM) videoId = canonM[1];
+  }
+  if (!videoId) {
+    const ogUrlM = html.match(/<meta\s+property="og:url"\s+content="https?:\/\/(?:www\.)?youtube\.com\/watch\?v=([a-zA-Z0-9_-]{11})"/i);
+    if (ogUrlM) videoId = ogUrlM[1];
+  }
+  if (!videoId) {
+    const anyM = html.match(/"videoId":"([a-zA-Z0-9_-]{11})"/);
+    if (anyM) videoId = anyM[1];
+  }
+  if (!videoId) return null;
+
+  const sources: VideoSource[] = [];
+  const seen = new Set<string>();
+
+  // 1. Embed URL (iframe source) — primary playback method. The browser
+  //    will load YouTube's official player which decodes the signature
+  //    cipher client-side and plays the video.
+  const embedUrl = `https://www.youtube.com/embed/${videoId}`;
+  if (!seen.has(embedUrl)) {
+    seen.add(embedUrl);
+    sources.push({
+      url: embedUrl,
+      type: "iframe",
+      ext: "html",
+      label: "YouTube embed · plays in browser",
+      quality: "Open",
+      pageUrl: finalUrl,
+    });
+  }
+
+  // 2. Try to parse ytInitialPlayerResponse for direct googlevideo URL.
+  //    Even though the sig is required, surfacing the URL lets the user
+  //    see the underlying media. We extract itag 18 (muxed 360p mp4).
+  const yipIdx = html.indexOf("ytInitialPlayerResponse");
+  if (yipIdx > 0) {
+    const eqIdx = html.indexOf("=", yipIdx);
+    if (eqIdx > 0) {
+      // Find the matching closing brace.
+      let depth = 0;
+      let start = -1;
+      let end = -1;
+      for (let i = eqIdx + 1; i < html.length; i++) {
+        const ch = html[i];
+        if (ch === "{") {
+          if (depth === 0) start = i;
+          depth++;
+        } else if (ch === "}") {
+          depth--;
+          if (depth === 0) {
+            end = i + 1;
+            break;
+          }
+        }
+      }
+      if (start > 0 && end > start) {
+        try {
+          const obj = JSON.parse(html.slice(start, end)) as {
+            streamingData?: {
+              formats?: Array<{
+                itag: number;
+                mimeType: string;
+                qualityLabel?: string;
+                signatureCipher?: string;
+                url?: string;
+              }>;
+            };
+            videoDetails?: { title?: string; thumbnail?: { thumbnails?: Array<{ url: string }> } };
+          };
+          const sd = obj.streamingData;
+          if (sd?.formats) {
+            for (const f of sd.formats) {
+              // Only muxed formats (itag 18 = 360p mp4) are directly playable.
+              // Most modern videos have signatureCipher which needs JS interpreter.
+              if (f.signatureCipher) {
+                // Parse s, sp, url from signatureCipher.
+                const params = new URLSearchParams(f.signatureCipher);
+                const rawUrl = params.get("url");
+                if (rawUrl && !seen.has(rawUrl)) {
+                  seen.add(rawUrl);
+                  sources.push({
+                    url: rawUrl,
+                    type: "mp4",
+                    ext: "mp4",
+                    label: `MP4 · ${f.qualityLabel || "360p"} · needs sig (may 403)`,
+                    quality: f.qualityLabel || "360p",
+                    pageUrl: finalUrl,
+                  });
+                }
+              } else if (f.url && !seen.has(f.url)) {
+                seen.add(f.url);
+                sources.push({
+                  url: f.url,
+                  type: "mp4",
+                  ext: "mp4",
+                  label: `MP4 · ${f.qualityLabel || "360p"}`,
+                  quality: f.qualityLabel || "360p",
+                  pageUrl: finalUrl,
+                });
+              }
+            }
+          }
+        } catch {
+          // JSON parse failed — fall through
+        }
+      }
+    }
+  }
+
+  // 3. Thumbnail as image source (always works).
+  const thumbMax = `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`;
+  if (!seen.has(thumbMax)) {
+    seen.add(thumbMax);
+    sources.push({
+      url: thumbMax,
+      type: "image",
+      ext: "jpg",
+      label: "Thumbnail · maxres",
+      quality: "thumbnail",
+      pageUrl: finalUrl,
+    });
+  }
+  const thumbHq = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+  if (!seen.has(thumbHq)) {
+    seen.add(thumbHq);
+    sources.push({
+      url: thumbHq,
+      type: "image",
+      ext: "jpg",
+      label: "Thumbnail · hq",
+      quality: "thumbnail",
+      pageUrl: finalUrl,
+    });
+  }
+
+  return sources.length ? sources : null;
+}
+
+/* ------------------------------------------------------------------ */
+/* Site: Facebook (facebook.com) — videos, reels, watch.               */
+/*   Facebook requires login to view most video content. The public    */
+/*   watch page returns a login-walled HTML shell. The CDN URL         */
+/*   (video.xx.fbcdn.net) is only exposed inside the authenticated     */
+/*   React/Relay store JSON and requires a logged-in session cookie.    */
+/*   We can't extract server-side. Surface the page as an iframe +     */
+/*   any og:image thumbnail (always public).                           */
+/* ------------------------------------------------------------------ */
+function extractFacebook(html: string, finalUrl: string): VideoSource[] | null {
+  const sources: VideoSource[] = [];
+  const seen = new Set<string>();
+
+  // 1. og:image — Facebook always exposes the video poster publicly.
+  const ogImg = html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i);
+  if (ogImg && !seen.has(ogImg[1])) {
+    seen.add(ogImg[1]);
+    sources.push({
+      url: ogImg[1],
+      type: "image",
+      ext: "jpg",
+      label: "Thumbnail · Facebook",
+      quality: "thumbnail",
+      pageUrl: finalUrl,
+    });
+  }
+  // 2. og:video (rare for FB but sometimes present for public videos).
+  const ogVid = html.match(/<meta\s+property="og:video(?::?\w*)"\s+content="([^"]+)"/i);
+  if (ogVid && /^https?:/.test(ogVid[1]) && !seen.has(ogVid[1])) {
+    seen.add(ogVid[1]);
+    sources.push({
+      url: ogVid[1],
+      type: "mp4",
+      ext: "mp4",
+      label: "MP4 · Facebook · public",
+      quality: "MP4",
+      pageUrl: finalUrl,
+    });
+  }
+  // 3. Iframe source — open the page in a new tab. The user's browser
+  //    session will load the video player.
+  if (!seen.has(finalUrl)) {
+    seen.add(finalUrl);
+    sources.push({
+      url: finalUrl,
+      type: "iframe",
+      ext: "html",
+      label: "Open Facebook page · login may be required",
+      quality: "Open",
+      pageUrl: finalUrl,
+    });
+  }
+  return sources.length ? sources : null;
+}
+
+/* ------------------------------------------------------------------ */
+/* Site: Instagram (instagram.com) — reels, posts, TV.                 */
+/*   Instagram requires login for most content. Public reels sometimes  */
+/*   expose og:video but it's gated by signed CDN URLs that expire     */
+/*   quickly. We surface og:image (always public) + iframe source.     */
+/* ------------------------------------------------------------------ */
+function extractInstagram(html: string, finalUrl: string): VideoSource[] | null {
+  const sources: VideoSource[] = [];
+  const seen = new Set<string>();
+  // 1. og:image (always public for public posts).
+  const ogImg = html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i);
+  if (ogImg && !seen.has(ogImg[1])) {
+    seen.add(ogImg[1]);
+    sources.push({
+      url: ogImg[1],
+      type: "image",
+      ext: "jpg",
+      label: "Thumbnail · Instagram",
+      quality: "thumbnail",
+      pageUrl: finalUrl,
+    });
+  }
+  // 2. og:video (rare but present for some public reels).
+  const ogVid = html.match(/<meta\s+property="og:video(?::?\w*)"\s+content="([^"]+)"/i);
+  if (ogVid && /^https?:/.test(ogVid[1]) && !seen.has(ogVid[1])) {
+    seen.add(ogVid[1]);
+    sources.push({
+      url: ogVid[1],
+      type: "mp4",
+      ext: "mp4",
+      label: "MP4 · Instagram · public",
+      quality: "MP4",
+      pageUrl: finalUrl,
+    });
+  }
+  // 3. Iframe source — open the page in a new tab.
+  if (!seen.has(finalUrl)) {
+    seen.add(finalUrl);
+    sources.push({
+      url: finalUrl,
+      type: "iframe",
+      ext: "html",
+      label: "Open Instagram page · login may be required",
+      quality: "Open",
+      pageUrl: finalUrl,
+    });
+  }
+  return sources.length ? sources : null;
+}
+
+/* ------------------------------------------------------------------ */
+/* Site: Telegram (t.me, telegram.me) — channel/group posts.           */
+/*   Telegram's /embed/ endpoint (t.me/{channel}/{id}?embed=1) returns  */
+/*   a public preview HTML with og:video / og:video:secure_url meta     */
+/*   tags pointing to cdnN.telegram.org / telesco.pe MP4 URLs (CORS-    */
+/*   open, range support). For text-only posts, only og:image is       */
+/*   present. We fetch the embed URL separately if the original URL     */
+/*   doesn't expose og:video.                                          */
+/* ------------------------------------------------------------------ */
+async function extractTelegram(html: string, finalUrl: string): Promise<VideoSource[] | null> {
+  const sources: VideoSource[] = [];
+  const seen = new Set<string>();
+
+  // 1. Try og:video / og:video:secure_url / og:video:url from the
+  //    original HTML.
+  const ogVidRe = /<meta\s+property="og:video(?::?\w*)"\s+content="([^"]+)"/gi;
+  let m: RegExpExecArray | null;
+  while ((m = ogVidRe.exec(html)) !== null) {
+    if (/^https?:/.test(m[1]) && !seen.has(m[1])) {
+      seen.add(m[1]);
+      sources.push({
+        url: m[1],
+        type: "mp4",
+        ext: "mp4",
+        label: "MP4 · Telegram · public",
+        quality: "MP4",
+        pageUrl: finalUrl,
+      });
+    }
+  }
+  // 2. og:image (always public).
+  const ogImg = html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i);
+  if (ogImg && !seen.has(ogImg[1])) {
+    seen.add(ogImg[1]);
+    sources.push({
+      url: ogImg[1],
+      type: "image",
+      ext: "jpg",
+      label: "Thumbnail · Telegram",
+      quality: "thumbnail",
+      pageUrl: finalUrl,
+    });
+  }
+
+  // 3. If no og:video found yet, try the embed URL: t.me/{channel}/{id}?embed=1
+  //    This endpoint returns a different page that exposes og:video for
+  //    video messages. Only fetch if the original URL looks like a post URL.
+  if (!sources.some((s) => s.type === "mp4")) {
+    let embedUrl: string | null = null;
+    try {
+      const u = new URL(finalUrl);
+      const parts = u.pathname.split("/").filter(Boolean);
+      // Pattern: t.me/{channel}/{postId}
+      if (parts.length === 2 && /^\d+$/.test(parts[1])) {
+        embedUrl = `${u.origin}/${parts[0]}/${parts[1]}?embed=1`;
+      }
+    } catch {
+      // ignore
+    }
+    if (embedUrl) {
+      try {
+        const r = await curlFetch(embedUrl, { timeoutMs: 15000 });
+        if (r.ok) {
+          const ogVidRe2 = /<meta\s+property="og:video(?::?\w*)"\s+content="([^"]+)"/gi;
+          while ((m = ogVidRe2.exec(r.text)) !== null) {
+            if (/^https?:/.test(m[1]) && !seen.has(m[1])) {
+              seen.add(m[1]);
+              sources.push({
+                url: m[1],
+                type: "mp4",
+                ext: "mp4",
+                label: "MP4 · Telegram · embed",
+                quality: "MP4",
+                pageUrl: finalUrl,
+              });
+            }
+          }
+          // Also look for twitter:player:stream
+          const twRe = /<meta\s+name="twitter:player:stream[^"]*"\s+content="([^"]+)"/gi;
+          while ((m = twRe.exec(r.text)) !== null) {
+            if (/^https?:/.test(m[1]) && !seen.has(m[1])) {
+              seen.add(m[1]);
+              sources.push({
+                url: m[1],
+                type: "mp4",
+                ext: "mp4",
+                label: "MP4 · Telegram · stream",
+                quality: "MP4",
+                pageUrl: finalUrl,
+              });
+            }
+          }
+        }
+      } catch {
+        // embed fetch failed — fall through
+      }
+    }
+  }
+
+  // 4. Iframe source — open the page in a new tab.
+  if (!seen.has(finalUrl)) {
+    seen.add(finalUrl);
+    sources.push({
+      url: finalUrl,
+      type: "iframe",
+      ext: "html",
+      label: "Open Telegram post",
+      quality: "Open",
+      pageUrl: finalUrl,
+    });
+  }
+  return sources.length ? sources : null;
+}
+
+/* ------------------------------------------------------------------ */
+/* Site: VK (vk.com) — Russian social network.                          */
+/*   VK video pages are fully Vue SPA with bot detection. The video    */
+/*   CDN URL (userapi.com / vk.com) requires signed hash params that    */
+/*   are only computed after the SPA boots. We surface og:image (often   */
+/*   present) + iframe source.                                          */
+/* ------------------------------------------------------------------ */
+function extractVK(html: string, finalUrl: string): VideoSource[] | null {
+  const sources: VideoSource[] = [];
+  const seen = new Set<string>();
+  // 1. og:image.
+  const ogImg = html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i);
+  if (ogImg && !seen.has(ogImg[1])) {
+    seen.add(ogImg[1]);
+    sources.push({
+      url: ogImg[1],
+      type: "image",
+      ext: "jpg",
+      label: "Thumbnail · VK",
+      quality: "thumbnail",
+      pageUrl: finalUrl,
+    });
+  }
+  // 2. og:video (rare but sometimes present).
+  const ogVid = html.match(/<meta\s+property="og:video(?::?\w*)"\s+content="([^"]+)"/i);
+  if (ogVid && /^https?:/.test(ogVid[1]) && !seen.has(ogVid[1])) {
+    seen.add(ogVid[1]);
+    sources.push({
+      url: ogVid[1],
+      type: "mp4",
+      ext: "mp4",
+      label: "MP4 · VK · public",
+      quality: "MP4",
+      pageUrl: finalUrl,
+    });
+  }
+  // 3. Iframe source.
+  if (!seen.has(finalUrl)) {
+    seen.add(finalUrl);
+    sources.push({
+      url: finalUrl,
+      type: "iframe",
+      ext: "html",
+      label: "Open VK page · bot-protected SPA",
+      quality: "Open",
+      pageUrl: finalUrl,
+    });
+  }
+  return sources.length ? sources : null;
+}
+
+/* ------------------------------------------------------------------ */
+/* Site: X.com / Twitter (x.com, twitter.com) — video tweets.           */
+/*   X.com serves a logged-out HTML shell with minimal meta tags. The  */
+/*   actual video CDN URL (video.twimg.com) is only exposed via the     */
+/*   GraphQL API which requires authentication. We surface og:image     */
+/*   (always public — the tweet's media preview) + iframe source.       */
+/* ------------------------------------------------------------------ */
+function extractXCom(html: string, finalUrl: string): VideoSource[] | null {
+  const sources: VideoSource[] = [];
+  const seen = new Set<string>();
+  // 1. og:image — for video tweets this is the video poster frame.
+  const ogImg = html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i);
+  if (ogImg && !seen.has(ogImg[1])) {
+    seen.add(ogImg[1]);
+    sources.push({
+      url: ogImg[1],
+      type: "image",
+      ext: "jpg",
+      label: "Thumbnail · X.com",
+      quality: "thumbnail",
+      pageUrl: finalUrl,
+    });
+  }
+  // 2. og:video (rare but sometimes present).
+  const ogVid = html.match(/<meta\s+property="og:video(?::?\w*)"\s+content="([^"]+)"/i);
+  if (ogVid && /^https?:/.test(ogVid[1]) && !seen.has(ogVid[1])) {
+    seen.add(ogVid[1]);
+    sources.push({
+      url: ogVid[1],
+      type: "mp4",
+      ext: "mp4",
+      label: "MP4 · X.com · public",
+      quality: "MP4",
+      pageUrl: finalUrl,
+    });
+  }
+  // 3. Iframe source.
+  if (!seen.has(finalUrl)) {
+    seen.add(finalUrl);
+    sources.push({
+      url: finalUrl,
+      type: "iframe",
+      ext: "html",
+      label: "Open X.com post · login may be required",
+      quality: "Open",
+      pageUrl: finalUrl,
+    });
+  }
+  return sources.length ? sources : null;
+}
+
+/* ------------------------------------------------------------------ */
+/* Site: Threads (threads.net, threads.com) — Meta's text platform.    */
+/*   Threads is a Vue SPA that requires JavaScript to render content.   */
+/*   The HTML shell doesn't expose video URLs. We surface og:image      */
+/*   (always present for media posts) + iframe source.                  */
+/* ------------------------------------------------------------------ */
+function extractThreads(html: string, finalUrl: string): VideoSource[] | null {
+  const sources: VideoSource[] = [];
+  const seen = new Set<string>();
+  // 1. og:image.
+  const ogImg = html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i);
+  if (ogImg && !seen.has(ogImg[1])) {
+    seen.add(ogImg[1]);
+    sources.push({
+      url: ogImg[1],
+      type: "image",
+      ext: "jpg",
+      label: "Thumbnail · Threads",
+      quality: "thumbnail",
+      pageUrl: finalUrl,
+    });
+  }
+  // 2. og:video (rare but present for some video posts).
+  const ogVid = html.match(/<meta\s+property="og:video(?::?\w*)"\s+content="([^"]+)"/i);
+  if (ogVid && /^https?:/.test(ogVid[1]) && !seen.has(ogVid[1])) {
+    seen.add(ogVid[1]);
+    sources.push({
+      url: ogVid[1],
+      type: "mp4",
+      ext: "mp4",
+      label: "MP4 · Threads · public",
+      quality: "MP4",
+      pageUrl: finalUrl,
+    });
+  }
+  // 3. Iframe source.
+  if (!seen.has(finalUrl)) {
+    seen.add(finalUrl);
+    sources.push({
+      url: finalUrl,
+      type: "iframe",
+      ext: "html",
+      label: "Open Threads post · login may be required",
+      quality: "Open",
+      pageUrl: finalUrl,
+    });
+  }
+  return sources.length ? sources : null;
+}
+
+/* ------------------------------------------------------------------ */
 /* Generic helper for captcha-protected hosts: returns a single iframe   */
 /* source pointing to the original URL so the user can open the page in  */
 /* their browser and solve the captcha (Cloudflare Turnstile, hCaptcha,  */
@@ -1377,6 +1925,49 @@ export async function trySiteExtractor(
       host.includes("upfiles") || host.includes("upfilesgo")
     ) {
       sources = extractCloudflareIframe(finalUrl, "Open page · Turnstile captcha required");
+    } else if (
+      // YouTube — video pages. We extract videoId + provide embed iframe
+      // + thumbnail. The signature cipher can't be decoded server-side.
+      host.includes("youtube.com") || host.includes("youtu.be") ||
+      host.includes("youtube-nocookie.com")
+    ) {
+      sources = extractYouTube(html, finalUrl);
+    } else if (
+      // Facebook — videos, reels, watch. Login-walled.
+      host.includes("facebook.com") || host.includes("fb.watch") ||
+      host.includes("fb.com")
+    ) {
+      sources = extractFacebook(html, finalUrl);
+    } else if (
+      // Instagram — reels, posts, TV. Login-walled.
+      host.includes("instagram.com") || host.includes("instagr.am")
+    ) {
+      sources = extractInstagram(html, finalUrl);
+    } else if (
+      // Telegram — t.me/{channel}/{postId}. Embed endpoint exposes og:video
+      // for video messages.
+      host === "t.me" || host.endsWith(".t.me") ||
+      host.includes("telegram.me") || host.includes("telegram.org")
+    ) {
+      sources = await extractTelegram(html, finalUrl);
+    } else if (
+      // VK — Russian social network. Bot-protected SPA.
+      host.includes("vk.com") || host.includes("vkontakte.ru") ||
+      host.includes("userapi.com")
+    ) {
+      sources = extractVK(html, finalUrl);
+    } else if (
+      // X.com / Twitter — login-walled SPA. og:image always public.
+      host === "x.com" || host.endsWith(".x.com") ||
+      host.includes("twitter.com") || host.includes("twimg.com")
+    ) {
+      sources = extractXCom(html, finalUrl);
+    } else if (
+      // Threads — Meta's text platform. Vue SPA.
+      host.includes("threads.net") || host.includes("threads.com") ||
+      host.includes("threads.instagram.com")
+    ) {
+      sources = extractThreads(html, finalUrl);
     }
     // Content-based fallbacks: even when the host is unknown, detect known
     // page structures. This auto-detects new mirror domains and white-labels.
