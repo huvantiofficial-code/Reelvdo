@@ -1459,3 +1459,70 @@ quick-glance card, the Insights dialog shows the same charts with shorter
 labels, the Settings drawer exposes just three core preferences, and the
 Download progress dialog fits cleanly inside a mobile viewport. Lint is
 clean (0 errors, 0 warnings).
+
+---
+
+## Phase H-6 — DrTuber + Xozilla + PornDr Extractors + Stream Loading Fix (2025-07-30)
+
+**Agent**: Z.ai Code
+
+### New Site Extractors (3 sites)
+
+1. **DrTuber** (`extractDrtuber`) — `drtuber.com`, `m.drtuber.desi`, `drtuber.desi`
+   - Extracts video ID from URL path `/video/{id}/{slug}`.
+   - Fetches `/play/{videoId}?from=video_bottom` which returns the actual `xcdn.drtuber.desi/mp4/{hash}.mp4?cdn_hash=...&cdn_ttl=3600` URL.
+   - The URL is IP-bound but works for ~1 hour.
+   - Falls back to scanning the original page HTML for xcdn MP4 URLs.
+
+2. **Xozilla** (`extractXozilla`) — `xozilla.xxx`
+   - Extracts `/get_file/23/{hash}/{id}000/{id}/{id}.mp4/` and `/get_file/23/{hash}/{id}000/{id}/{id}hd.mp4/` URLs.
+   - These redirect (302) to `vcdn.xozilla.xxx` → `ahcdn.com` CDN.
+   - Skips `/get_file/1/` URLs (preview GIFs, return `content-type: image/gif`).
+   - Returns HD (720p) and SD (480p) sources.
+
+3. **PornDr** (`extractPorndr`, async) — `porndr.com`
+   - Extracts `/get_file/1/{hash}/{id}000/{id}/{id}_{quality}.mp4/?v-acctoken={token}` URLs.
+   - The `v-acctoken` expires within seconds, so the extractor follows the redirect chain server-side:
+     - `get_file` → 302 → `vcdn1.porndr.com/key=...,end=...` → 302 → `ahcdn.com/key=...,end=...`
+   - Returns the final `ahcdn.com` URL which has a longer-lived `key=` param and CORS `*`.
+   - Skips `_preview.mp4` URLs.
+   - Uses `maxRedirects: 0` to capture the `Location` header without following redirects.
+
+### curlFetch Enhancement
+
+Added `maxRedirects` option to `curlFetch()` in `src/lib/curl-fetch.ts`:
+- `maxRedirects: 0` — don't follow any redirects, return the 3xx response with `redirectUrl` field.
+- `maxRedirects: N` — follow up to N redirects.
+- Default (undefined) — follow all redirects (existing behavior).
+- Added `redirectUrl?: string` to `CurlResult` interface — contains the `Location` header value when `maxRedirects: 0`.
+- Updated curl `-w` metadata to include `%{redirect_url}`.
+
+### Stream Loading Fix (HLS init segment)
+
+Fixed the "Loading stream" issue that affected most HLS-based sites (xhamster, pornhub, etc.):
+- **Root cause**: The `rewriteM3u8` function was passing `kind=m3u8` to `#EXT-X-MAP:URI="..."` (init segment) URLs, causing the playlist route to treat binary fMP4 init segments as playlists (returning `content-type: application/vnd.apple.mpegurl` instead of `video/mp4`).
+- **Fix**: Removed `kind=m3u8` from `#EXT-X-MAP:URI` and `#EXT-X-KEY:URI` rewrites — these are binary files, not playlists. The playlist route now streams them as binary based on content-type sniffing.
+- **Result**: HLS streams now load correctly — the init segment returns `content-type: video/mp4` and hls.js can parse it properly.
+
+### Proxy Body Cancellation Fix
+
+Fixed `TypeError: Response body object should not be disturbed or locked` in `src/app/api/proxy/route.ts`:
+- Changed `result.body.cancel?.()` to `await result.body.cancel()` with try/catch.
+- Added `result = undefined` after cancelling to prevent reusing the cancelled body.
+- Added `lastError` tracking for better error messages.
+
+### Verification (agent-browser)
+
+- ✅ **DrTuber** (`m.drtuber.desi/video/9483762/...`) — Returns 1 MP4 source. Video plays in watch dialog (time scrubber reached 11.85s).
+- ✅ **Xozilla** (`xozilla.xxx/videos/661230/...`) — Returns 2 MP4 sources (720p HD + 480p SD). Video plays (time scrubber reached 5.39s).
+- ✅ **PornDr** (`porndr.com/videos/380349/...`) — Returns 1 MP4 source (ahcdn.com CDN URL). Video plays (time scrubber reached 6.21s).
+- ✅ Lint clean (0 errors, 0 warnings).
+- ✅ No browser console errors.
+
+### Files Modified
+
+- `src/lib/site-extractors.ts` — Added `extractDrtuber`, `extractXozilla`, `extractPorndr` functions. Wired into dispatch. Updated content-based fallback.
+- `src/lib/curl-fetch.ts` — Added `maxRedirects` option + `redirectUrl` field to `CurlResult`.
+- `src/app/api/playlist/route.ts` — Fixed `rewriteM3u8` to not pass `kind=m3u8` to `#EXT-X-MAP:URI` and `#EXT-X-KEY:URI`.
+- `src/app/api/proxy/route.ts` — Fixed body cancellation with `await` + `result = undefined`.
+- `src/components/result-summary-card.tsx` — Added `drtuber`, `xozilla`, `porndr` to KNOWN_SITES.

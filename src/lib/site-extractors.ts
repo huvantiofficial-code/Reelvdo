@@ -1887,6 +1887,239 @@ function extractThreads(html: string, finalUrl: string): VideoSource[] | null {
 }
 
 /* ------------------------------------------------------------------ */
+/* Site: DrTuber (drtuber.com, m.drtuber.desi, drtuber.desi) — tube site. */
+/*   The video page has a /play/{videoId} link that returns a redirect  */
+/*   page containing the actual MP4 URL on xcdn.drtuber.desi:           */
+/*   https://xcdn.drtuber.desi/mp4/{hash}.mp4?cdn_hash=...&cdn_ttl=...  */
+/*   The URL is IP-bound but works for ~1 hour. We fetch /play/{id} and */
+/*   extract the xcdn MP4 URL.                                         */
+/* ------------------------------------------------------------------ */
+async function extractDrtuber(html: string, finalUrl: string): Promise<VideoSource[] | null> {
+  // Extract video ID from URL or HTML.
+  let videoId: string | null = null;
+  try {
+    const u = new URL(finalUrl);
+    const parts = u.pathname.split("/").filter(Boolean);
+    // Pattern: /video/{id}/{slug}
+    if (parts.length >= 2 && parts[0] === "video") {
+      videoId = parts[1];
+    }
+    // Pattern: /embed/{id}
+    if (parts.length >= 2 && parts[0] === "embed") {
+      videoId = parts[1];
+    }
+  } catch {
+    // ignore
+  }
+  // Fallback: search HTML for videoId
+  if (!videoId) {
+    const m = html.match(/videoId\s*:\s*(\d+)/);
+    if (m) videoId = m[1];
+  }
+  if (!videoId) return null;
+
+  // Determine the origin (handle m.drtuber.desi, drtuber.com, etc.)
+  let origin: string;
+  try {
+    origin = new URL(finalUrl).origin;
+  } catch {
+    origin = "https://www.drtuber.com";
+  }
+
+  const sources: VideoSource[] = [];
+  const seen = new Set<string>();
+
+  // Fetch /play/{videoId} to get the actual MP4 URL.
+  try {
+    const playUrl = `${origin}/play/${videoId}?from=video_bottom`;
+    const r = await curlFetch(playUrl, {
+      timeoutMs: 15000,
+      headers: { referer: finalUrl },
+    });
+    if (r.ok) {
+      // Extract xcdn.drtuber.desi MP4 URL (the real video file).
+      // URL format: https://xcdn.drtuber.desi/mp4/{hash}.mp4?cdn_hash=...&cdn_ttl=...
+      const mp4Re = /https?:\/\/xcdn\.[^"'\s<>()\\]+?\.mp4[^"'\s<>()\\]*/i;
+      const m = r.text.match(mp4Re);
+      if (m && !seen.has(m[0])) {
+        seen.add(m[0]);
+        sources.push({
+          url: m[0],
+          type: "mp4",
+          ext: "mp4",
+          label: "MP4",
+          quality: "MP4",
+          pageUrl: finalUrl,
+        });
+      }
+    }
+  } catch {
+    // fall through
+  }
+
+  // Fallback: scan the original page HTML for xcdn MP4 URLs
+  if (!sources.length) {
+    const mp4Re = /https?:\/\/xcdn\.[^"'\s<>()\\]+?\.mp4[^"'\s<>()\\]*/gi;
+    let m: RegExpExecArray | null;
+    while ((m = mp4Re.exec(html)) !== null) {
+      if (seen.has(m[0])) continue;
+      seen.add(m[0]);
+      sources.push({
+        url: m[0],
+        type: "mp4",
+        ext: "mp4",
+        label: "MP4",
+        quality: "MP4",
+        pageUrl: finalUrl,
+      });
+    }
+  }
+
+  return sources.length ? sources : null;
+}
+
+/* ------------------------------------------------------------------ */
+/* Site: Xozilla (xozilla.xxx) — tube site.                            */
+/*   The video page contains /get_file/23/{hash}/{id}000/{id}/{id}.mp4/ */
+/*   and /get_file/23/{hash}/{id}000/{id}/{id}hd.mp4/ URLs. These      */
+/*   redirect (302) to vcdn.xozilla.xxx → ahcdn.com CDN which serves   */
+/*   the actual MP4 with CORS-open, range support. The /get_file/1/    */
+/*   URLs are preview GIFs (skip those).                               */
+/* ------------------------------------------------------------------ */
+function extractXozilla(html: string, finalUrl: string): VideoSource[] | null {
+  const sources: VideoSource[] = [];
+  const seen = new Set<string>();
+
+  // Find all /get_file/ URLs. Only /get_file/23/ (or higher first segment)
+  // are real video files; /get_file/1/ are preview GIFs.
+  const gfRe = /https?:\/\/[^"'\s<>()\\]+?\/get_file\/(\d+)\/[^"'\s<>()\\]+\/(\d+)\/(\d+)\/(\d+)(hd)?\.mp4\/?/gi;
+  let m: RegExpExecArray | null;
+  while ((m = gfRe.exec(html)) !== null) {
+    const url = m[0];
+    if (seen.has(url)) continue;
+    seen.add(url);
+    const firstSeg = parseInt(m[1], 10);
+    const isHd = m[5] === "hd";
+    // Skip /get_file/1/ (previews). Only keep /get_file/2+/ (real videos).
+    if (firstSeg < 2) continue;
+    const quality = isHd ? "HD" : "SD";
+    sources.push({
+      url,
+      type: "mp4",
+      ext: "mp4",
+      label: `MP4 · ${quality}`,
+      quality: isHd ? "720p" : "480p",
+      pageUrl: finalUrl,
+    });
+  }
+
+  return sources.length ? sources : null;
+}
+
+/* ------------------------------------------------------------------ */
+/* Site: PornDr (porndr.com) — tube site.                              */
+/*   The video page contains a video_url JS var with a /get_file/ URL  */
+/*   that includes a v-acctoken query param. The URL redirects (302)   */
+/*   to vcdn1.porndr.com → ahcdn.com CDN. The token is IP-bound but    */
+/*   works when the referer is the full video page URL. Skip           */
+/*   _preview.mp4 URLs (short previews).                               */
+/* ------------------------------------------------------------------ */
+async function extractPorndr(html: string, finalUrl: string): Promise<VideoSource[] | null> {
+  const sources: VideoSource[] = [];
+  const seen = new Set<string>();
+
+  // Determine the origin for the page param. PornDr's CDN rejects requests
+  // with the full video page URL as referer, but accepts the origin
+  // (https://www.porndr.com/). So we pass only the origin as pageUrl.
+  let origin: string;
+  try {
+    origin = new URL(finalUrl).origin + "/";
+  } catch {
+    origin = "https://www.porndr.com/";
+  }
+
+  // Find all /get_file/ URLs that are NOT _preview.mp4.
+  // Format: /get_file/1/{hash}/{id}000/{id}/{id}_{quality}.mp4/?v-acctoken={token}
+  // Skip _preview.mp4 URLs (short preview clips, not the full video).
+  const gfRe = /https?:\/\/[^"'\s<>()\\]+?\/get_file\/\d+\/[^"'\s<>()\\]+\/(\d+)\/(\d+)\/(\d+)(?:_(\d+p|hd))?\.mp4\/?\?v-acctoken=[^"'\s<>()\\]+/gi;
+  const rawUrls: Array<{ url: string; quality: string }> = [];
+  let m: RegExpExecArray | null;
+  while ((m = gfRe.exec(html)) !== null) {
+    const url = m[0];
+    // Skip _preview.mp4 URLs
+    if (/_preview\.mp4/i.test(url)) continue;
+    if (seen.has(url)) continue;
+    seen.add(url);
+    const quality = m[4] || "MP4";
+    rawUrls.push({ url, quality });
+  }
+
+  // Also look for the video_url JS variable directly (more reliable).
+  if (!rawUrls.length) {
+    const vuRe = /video_url\s*:\s*['"]([^'"]+\/get_file\/[^'"]+)['"]/i;
+    const vuM = html.match(vuRe);
+    if (vuM && !seen.has(vuM[1])) {
+      seen.add(vuM[1]);
+      const qM = vuM[1].match(/_(\d+p|hd)\.mp4/i);
+      const quality = qM?.[1] || "MP4";
+      rawUrls.push({ url: vuM[1], quality });
+    }
+  }
+
+  // The v-acctoken expires within seconds. Follow the redirect chain
+  // server-side to get the final ahcdn.com URL (which has a longer-lived
+  // key= param). The ahcdn.com CDN has CORS * and range support.
+  for (const { url, quality } of rawUrls) {
+    try {
+      const r = await curlFetch(url, {
+        timeoutMs: 10000,
+        headers: { referer: origin },
+        maxRedirects: 0, // don't follow redirects — capture Location header
+      });
+      // The get_file URL returns 302 → vcdn1.porndr.com → 302 → ahcdn.com
+      // r.redirectUrl contains the Location header value.
+      if (r.redirectUrl && /^https?:/.test(r.redirectUrl)) {
+        const vcdnUrl = r.redirectUrl;
+        // Follow the vcdn1 redirect to get the final ahcdn.com URL.
+        const r2 = await curlFetch(vcdnUrl, {
+          timeoutMs: 10000,
+          maxRedirects: 0,
+        });
+        if (r2.redirectUrl && /^https?:/.test(r2.redirectUrl)) {
+          const ahcdnUrl = r2.redirectUrl;
+          if (!seen.has(ahcdnUrl)) {
+            seen.add(ahcdnUrl);
+            sources.push({
+              url: ahcdnUrl,
+              type: "mp4",
+              ext: "mp4",
+              label: `MP4 · ${quality}`,
+              quality,
+              pageUrl: origin,
+            });
+          }
+        }
+      }
+    } catch {
+      // If redirect resolution fails, fall back to the raw URL.
+      if (!seen.has(url)) {
+        seen.add(url);
+        sources.push({
+          url,
+          type: "mp4",
+          ext: "mp4",
+          label: `MP4 · ${quality}`,
+          quality,
+          pageUrl: origin,
+        });
+      }
+    }
+  }
+
+  return sources.length ? sources : null;
+}
+
+/* ------------------------------------------------------------------ */
 /* Generic helper for captcha-protected hosts: returns a single iframe   */
 /* source pointing to the original URL so the user can open the page in  */
 /* their browser and solve the captcha (Cloudflare Turnstile, hCaptcha,  */
@@ -2029,6 +2262,18 @@ export async function trySiteExtractor(
       // returns real CDN MP4 URLs (480p/360p/240p). The hash is extracted
       // from EP.video.player.hash in the page JS and transformed base-16→36.
       sources = await extractEporner(html, finalUrl);
+    } else if (host.includes("drtuber")) {
+      // DrTuber (drtuber.com, m.drtuber.desi) — /play/{videoId} returns the
+      // actual xcdn.drtuber.desi MP4 URL with a time-limited token.
+      sources = await extractDrtuber(html, finalUrl);
+    } else if (host.includes("xozilla")) {
+      // Xozilla (xozilla.xxx) — /get_file/23/{hash}/{id}/{id}.mp4/ URLs
+      // redirect to ahcdn.com CDN. Skip /get_file/1/ (preview GIFs).
+      sources = extractXozilla(html, finalUrl);
+    } else if (host.includes("porndr")) {
+      // PornDr (porndr.com) — /get_file/{n}/{hash}/{id}/{id}_{quality}.mp4/?v-acctoken=...
+      // URLs redirect to ahcdn.com CDN. Requires full video page as referer.
+      sources = await extractPorndr(html, finalUrl);
     } else if (host.includes("spankbang")) {
       // SpankBang — Cloudflare "Just a moment..." interstitial on all pages.
       // Cannot extract server-side; surface as iframe.

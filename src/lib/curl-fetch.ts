@@ -33,6 +33,9 @@ export interface CurlResult {
   status: number;
   contentType: string;
   ok: boolean;
+  /** The redirect URL from the Location header (present when maxRedirects: 0
+   *  and the server returns a 3xx redirect). Empty string if no redirect. */
+  redirectUrl?: string;
 }
 
 export interface CurlBufferResult {
@@ -128,7 +131,7 @@ async function fetchFallback(
  */
 export async function curlFetch(
   url: string,
-  opts: { headers?: Record<string, string>; method?: string; body?: string; timeoutMs?: number; referer?: string } = {}
+  opts: { headers?: Record<string, string>; method?: string; body?: string; timeoutMs?: number; referer?: string; maxRedirects?: number } = {}
 ): Promise<CurlResult> {
   // When curl is unavailable (e.g. Vercel serverless), use the native fetch
   // fallback so extraction keeps working without the Cloudflare bypass.
@@ -158,7 +161,6 @@ export async function curlFetch(
 
   const args: string[] = [
     "-sS", // silent but show errors
-    "-L", // follow redirects
     "--compressed", // auto-decompress gzip/deflate/br
     "-4", // force IPv4 — keeps the source IP stable across requests (some
          // hosts bind one-time tokens to the requester's IP).
@@ -166,12 +168,20 @@ export async function curlFetch(
     "--connect-timeout", "15",
     "-A", UA,
   ];
+  // Follow redirects by default, but allow caller to disable or limit.
+  if (opts.maxRedirects === 0) {
+    // Don't follow any redirects — return the 3xx response with Location header.
+  } else if (typeof opts.maxRedirects === "number") {
+    args.push("-L", `--max-redirs`, String(opts.maxRedirects));
+  } else {
+    args.push("-L"); // follow redirects (default)
+  }
   for (const [k, v] of headerMap) {
     args.push("-H", `${k}: ${v}`);
   }
   args.push(
     "-o", "-", // body to stdout
-    "-w", "\n__CURL_META__\n%{http_code}\n%{url_effective}\n%{content_type}", // write meta after body
+    "-w", "\n__CURL_META__\n%{http_code}\n%{url_effective}\n%{content_type}\n%{redirect_url}", // write meta after body
   );
 
   // Use an explicit referer override when provided (e.g. the embedding page
@@ -229,15 +239,17 @@ export async function curlFetch(
   let status = 200;
   let finalUrl = url;
   let contentType = "";
+  let redirectUrl = "";
   if (idx >= 0) {
     text = stdout.slice(0, idx);
     const meta = stdout.slice(idx + sentinel.length).split("\n");
     status = parseInt(meta[0] || "0", 10) || 0;
     finalUrl = meta[1] || url;
     contentType = meta[2] || "";
+    redirectUrl = meta[3] || "";
   }
 
-  return { text, finalUrl, status, contentType, ok: status >= 200 && status < 300 };
+  return { text, finalUrl, status, contentType, ok: status >= 200 && status < 300, redirectUrl };
 }
 
 /** Quick check whether a response body is a Cloudflare challenge page.

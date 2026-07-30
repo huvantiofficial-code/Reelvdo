@@ -106,11 +106,13 @@ export async function GET(req: NextRequest) {
   // soft-block 200+text/html), re-extract a fresh token from the page URL and
   // retry, with a short backoff so the rate-limit window can clear.
   let result: { status: number; headers: Record<string, string>; body: ReadableStream<Uint8Array> } | undefined;
+  let lastError: Error | undefined;
   const MAX_REFRESH_ATTEMPTS = 2;
   for (let attempt = 0; attempt <= MAX_REFRESH_ATTEMPTS; attempt++) {
     try {
       result = await streamUrl(target, range, referer);
     } catch (e) {
+      lastError = e instanceof Error ? e : new Error(String(e));
       // Network-level failure (curl crashed, DNS, timeout). Try a refresh on
       // the next loop iteration if we still have attempts left and have a page.
       if (attempt < MAX_REFRESH_ATTEMPTS && page) {
@@ -123,7 +125,7 @@ export async function GET(req: NextRequest) {
         }
       }
       return new Response(
-        JSON.stringify({ error: "Upstream fetch failed", detail: e instanceof Error ? e.message : "" }),
+        JSON.stringify({ error: "Upstream fetch failed", detail: lastError.message }),
         { status: 502, headers: { "content-type": "application/json", ...corsHeaders() } }
       );
     }
@@ -134,8 +136,13 @@ export async function GET(req: NextRequest) {
       isSoftBlocked(target, result.status, result.headers);
     if (!blocked || !page || attempt >= MAX_REFRESH_ATTEMPTS) break;
 
-    // Cancel the blocked body and refresh the token.
-    try { result.body.cancel?.(); } catch { /* ignore */ }
+    // The body is a ReadableStream — we need to cancel it before fetching
+    // a fresh URL. Use a try/catch because the body may already be closed.
+    try {
+      await result.body.cancel();
+    } catch { /* ignore — body may already be closed */ }
+    // Clear result so we don't accidentally use the cancelled body.
+    result = undefined;
     const fresh = await refreshSourceUrl(page, "mp4");
     if (!fresh || fresh.url === target) break; // no fresh token available
     target = fresh.url;
@@ -145,8 +152,9 @@ export async function GET(req: NextRequest) {
   }
 
   if (!result) {
+    // If we have a last error, return it; otherwise generic 502.
     return new Response(
-      JSON.stringify({ error: "Upstream fetch failed" }),
+      JSON.stringify({ error: "Upstream fetch failed", detail: lastError?.message || "no result after retries" }),
       { status: 502, headers: { "content-type": "application/json", ...corsHeaders() } }
     );
   }
