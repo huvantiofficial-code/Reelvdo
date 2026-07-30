@@ -87,44 +87,69 @@ export async function GET(req: NextRequest) {
   }
 
   const keyCache = new Map<string, Buffer>();
-  const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
+      let failedSegments = 0;
       for (let i = 0; i < segments.length; i++) {
         const seg = segments[i];
-        try {
-          const r = await curlFetchBuffer(seg.url, { timeoutMs: 90000, referer });
-          if (!r.ok) {
-            controller.enqueue(encoder.encode(`\n[segment ${i + 1} failed: ${r.status}]\n`));
-            continue;
-          }
-          let buf = r.buffer;
-          if (seg.key && seg.key.method === "AES-128") {
-            try {
-              let keyBuf = keyCache.get(seg.key.uri);
-              if (!keyBuf) {
-                keyBuf = await fetchKey(seg.key.uri, referer);
-                keyCache.set(seg.key.uri, keyBuf);
-              }
-              let iv: Buffer;
-              if (seg.key.iv) {
-                iv = Buffer.from(seg.key.iv, "hex");
-              } else {
-                iv = Buffer.alloc(16);
-                iv.writeUInt32BE(i + 1, 12);
-              }
-              const decipher = createDecipheriv("aes-128-cbc", keyBuf, iv);
-              buf = Buffer.concat([decipher.update(buf), decipher.final()]);
-            } catch {
-              // write raw on failure
+        // Fetch the segment, retrying once on failure (transient network
+        // errors are common for HLS CDNs). We DO NOT inject text error
+        // markers into the stream — that would corrupt the binary .ts file
+        // and inflate the byte count past the size estimate. Failed segments
+        // are silently skipped (the video will have a small gap there).
+        let buf: Buffer | null = null;
+        for (let attempt = 0; attempt < 2 && !buf; attempt++) {
+          try {
+            const r = await curlFetchBuffer(seg.url, { timeoutMs: 90000, referer });
+            if (r.ok && r.buffer.length > 0) {
+              buf = r.buffer;
+            } else if (attempt === 0) {
+              // Brief backoff before retry.
+              await new Promise((res) => setTimeout(res, 500));
+            }
+          } catch {
+            if (attempt === 0) {
+              await new Promise((res) => setTimeout(res, 500));
             }
           }
+        }
+        if (!buf) {
+          failedSegments++;
+          continue;
+        }
+        // Decrypt AES-128 encrypted segments if a key is present.
+        if (seg.key && seg.key.method === "AES-128") {
+          try {
+            let keyBuf = keyCache.get(seg.key.uri);
+            if (!keyBuf) {
+              keyBuf = await fetchKey(seg.key.uri, referer);
+              keyCache.set(seg.key.uri, keyBuf);
+            }
+            let iv: Buffer;
+            if (seg.key.iv) {
+              iv = Buffer.from(seg.key.iv, "hex");
+            } else {
+              iv = Buffer.alloc(16);
+              iv.writeUInt32BE(i + 1, 12);
+            }
+            const decipher = createDecipheriv("aes-128-cbc", keyBuf, iv);
+            buf = Buffer.concat([decipher.update(buf), decipher.final()]);
+          } catch {
+            // Decryption failed — use raw bytes (better than skipping).
+          }
+        }
+        try {
           controller.enqueue(new Uint8Array(buf));
         } catch {
-          controller.enqueue(encoder.encode(`\n[segment ${i + 1} error]\n`));
+          // Client disconnected — stop processing.
+          break;
         }
       }
-      controller.close();
+      try {
+        controller.close();
+      } catch {
+        // already closed
+      }
     },
   });
 

@@ -2245,6 +2245,14 @@ function extractVidsSt(html: string, finalUrl: string): VideoSource[] | null {
     if (thM2) thumb = thM2[1].replace(/\\\//g, "/");
   }
 
+  // Extract the original video filename (e.g. "1000256791.mp4") so the
+  // downloaded file keeps a meaningful name instead of a generic label.
+  let videoName: string | null = null;
+  const vnM = html.match(/"videoName"\s*:\s*"([^"]+)"/);
+  if (vnM) {
+    videoName = vnM[1].replace(/\\\//g, "/").trim();
+  }
+
   // 1. PRIMARY: embeddable iframe → https://vids.st/e/{id}
   //    The embed page is a self-contained player that runs in the user's
   //    browser, so the CDN sees the user's IP (which is allowed).
@@ -2269,6 +2277,7 @@ function extractVidsSt(html: string, finalUrl: string): VideoSource[] | null {
       ext: "m3u8",
       label: "HLS · direct",
       quality: "HLS",
+      filename: videoName || undefined,
       pageUrl: finalUrl,
     });
   }

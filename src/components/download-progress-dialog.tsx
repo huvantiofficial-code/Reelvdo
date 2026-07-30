@@ -119,6 +119,12 @@ export function DownloadProgressDialog({
   const effectiveUrlRef = useRef<string | null>(null);
   // Track the page URL for referer.
   const pageUrlRef = useRef<string | undefined>(undefined);
+  // Track whether the source is HLS/DASH. For these, /api/stream concatenates
+  // all segments server-side and IGNORES Range headers — so "resume from byte
+  // N" is impossible (it would re-stream from segment 0 and append to existing
+  // chunks, producing a doubled + corrupted file). For HLS we must RESTART
+  // from scratch on resume/retry (clear chunks, reset received to 0).
+  const isHlsRef = useRef(false);
 
   const reset = useCallback(() => {
     setState({
@@ -138,6 +144,7 @@ export function DownloadProgressDialog({
     chunksRef.current = [];
     effectiveUrlRef.current = null;
     pageUrlRef.current = undefined;
+    isHlsRef.current = false;
   }, []);
 
   /** Build a Blob from the accumulated chunks, create an object URL, and
@@ -168,14 +175,22 @@ export function DownloadProgressDialog({
    *  resume) and streams chunks into the in-memory chunks array. Returns
    *  when the stream ends, or throws on error. Respects pauseRef — when
    *  paused, it stops reading and returns so resume can re-fetch with a
-   *  Range header and continue appending to the same chunks array. */
+   *  Range header and continue appending to the same chunks array.
+   *
+   *  NOTE: `rangeFrom` is ONLY meaningful for direct/proxied MP4 downloads
+   *  where the server honours `Range: bytes=N-`. For HLS/DASH the stream
+   *  endpoint ignores Range and always re-streams from segment 0, so the
+   *  caller MUST clear chunks + reset received to 0 before calling this
+   *  (see `restartHlsDownload`). */
   const downloadLoop = async (
     fetchUrl: string,
     controller: AbortController,
     rangeFrom?: number
   ): Promise<"done" | "paused"> => {
     const headers: Record<string, string> = {};
-    if (rangeFrom && rangeFrom > 0) {
+    // Only send a Range header for non-HLS sources. /api/stream (HLS) does
+    // not support Range and would ignore it, re-streaming from segment 0.
+    if (rangeFrom && rangeFrom > 0 && !isHlsRef.current) {
       headers["range"] = `bytes=${rangeFrom}-`;
     }
     const res = await fetch(fetchUrl, {
@@ -187,8 +202,9 @@ export function DownloadProgressDialog({
       throw new Error(`Server returned ${res.status}`);
     }
 
-    // If resuming (206 Partial Content), the Content-Length is the REMAINING
-    // bytes, not the total. The total is already set from the initial fetch.
+    // If resuming a non-HLS download (206 Partial Content), the
+    // Content-Length is the REMAINING bytes, not the total. The total is
+    // already set from the initial fetch.
     if (!(rangeFrom && rangeFrom > 0 && res.status === 206)) {
       const totalHeader = res.headers.get("content-length");
       const total = totalHeader ? parseInt(totalHeader, 10) : null;
@@ -214,16 +230,75 @@ export function DownloadProgressDialog({
         // Always accumulate in memory — on completion we build a Blob and
         // auto-trigger a hidden <a download> click (no Save As prompt).
         chunksRef.current.push(value);
-        // Update UI with received bytes.
-        setState((s) => ({
-          ...s,
-          received: receivedRef.current,
-          phase: "downloading",
-        }));
+        // Update UI with received bytes. If the stream produces MORE bytes
+        // than the pre-fetched estimate (common for HLS when /api/size
+        // under-counts segments), bump the total up to reality so the bar
+        // never shows >100% and ETA never goes negative.
+        setState((s) => {
+          let total = s.total;
+          if (total && receivedRef.current > total) {
+            total = receivedRef.current;
+          }
+          return {
+            ...s,
+            received: receivedRef.current,
+            total,
+            phase: "downloading",
+          };
+        });
       }
     }
     return "done";
   };
+
+  /** Restart an HLS/DASH download from scratch. /api/stream ignores Range
+   *  headers, so the only correct way to "resume" an HLS download is to
+   *  clear the accumulated chunks and re-stream from segment 0. This
+   *  prevents the doubled-size / corrupted-file bug that occurred when we
+   *  appended a fresh full stream to the existing partial chunks. */
+  const restartHlsDownload = useCallback(async (filename: string) => {
+    const controller = new AbortController();
+    abortRef.current = controller;
+    pauseRef.current = false;
+    // Clear everything — we're starting over.
+    chunksRef.current = [];
+    receivedRef.current = 0;
+    setState((s) => ({
+      ...s,
+      phase: "fetching",
+      received: 0,
+      error: null,
+      finishedAt: null,
+      // Keep the estimated total so the bar still shows a target, but mark
+      // it approx since we're re-measuring.
+      approx: true,
+    }));
+    try {
+      if (!effectiveUrlRef.current) throw new Error("No download URL");
+      const result = await downloadLoop(effectiveUrlRef.current, controller);
+      if (result === "paused") {
+        setState((s) => ({ ...s, phase: "downloading" }));
+        return;
+      }
+      const blobUrl = autoSaveBlob(filename);
+      setState((s) => ({
+        ...s,
+        phase: "done",
+        finishedAt: Date.now(),
+        blobUrl,
+      }));
+      toast.success("Download complete — saved to your downloads");
+    } catch (e) {
+      if ((e as Error).name === "AbortError") return;
+      setState((s) => ({
+        ...s,
+        phase: "error",
+        finishedAt: Date.now(),
+        error: e instanceof Error ? e.message : "Restart failed",
+      }));
+      toast.error("Restart failed");
+    }
+  }, [autoSaveBlob]);
 
   // Start the download when a source arrives.
   useEffect(() => {
@@ -235,6 +310,7 @@ export function DownloadProgressDialog({
     chunksRef.current = [];
     effectiveUrlRef.current = null;
     pageUrlRef.current = source.pageUrl;
+    isHlsRef.current = source.type === "m3u8" || source.type === "mpd";
 
     setState({
       phase: "fetching",
@@ -253,7 +329,7 @@ export function DownloadProgressDialog({
     // can show a real % bar.
     let sizeTotal: number | null = null;
     let sizeApprox = false;
-    if (source.type === "m3u8" || source.type === "mpd") {
+    if (isHlsRef.current) {
       const sizeUrl = `/api/size?url=${encodeURIComponent(source.url)}${
         source.pageUrl ? `&page=${encodeURIComponent(source.pageUrl)}` : ""
       }`;
@@ -388,7 +464,16 @@ export function DownloadProgressDialog({
     setState((s) => ({ ...s }));
 
     if (wasPaused) {
-      // Resuming — re-fetch with Range header to continue from receivedRef.
+      // Resuming. For HLS/DASH the /api/stream endpoint ignores Range headers
+      // and always re-streams from segment 0 — so we MUST restart from
+      // scratch (clear chunks, reset received) instead of appending, otherwise
+      // we'd produce a doubled + corrupted file. For direct MP4 we use a
+      // Range header to continue from where we left off.
+      if (isHlsRef.current) {
+        await restartHlsDownload(state.filename);
+        return;
+      }
+      // Non-HLS: re-fetch with Range header to continue from receivedRef.
       // The previous downloadLoop returned "paused" and left the chunks
       // array intact. We re-run the loop with a Range header so the server
       // sends only the remaining bytes, which we append to the same array.
@@ -444,9 +529,11 @@ export function DownloadProgressDialog({
     elapsedMs > 500 && state.received > 0
       ? state.received / (elapsedMs / 1000)
       : 0;
+  // ETA is clamped to >= 0 so it never shows a negative "remaining" value
+  // (which happened when received exceeded the pre-fetched estimate).
   const etaMs =
     state.total && state.received > 0 && speed > 0
-      ? ((state.total - state.received) / speed) * 1000
+      ? Math.max(0, ((state.total - state.received) / speed) * 1000)
       : null;
 
   // Tick once a second while downloading so ETA stays fresh.
@@ -569,6 +656,18 @@ export function DownloadProgressDialog({
             )}
           </div>
 
+          {/* Paused HLS hint — resume restarts from scratch for streams */}
+          {isPaused && isHlsRef.current && (
+            <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-2.5">
+              <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+              <p className="text-[11px] text-amber-700 dark:text-amber-300">
+                Paused. HLS streams can&apos;t resume mid-file — clicking
+                &ldquo;Restart&rdquo; will re-download the video from the
+                beginning.
+              </p>
+            </div>
+          )}
+
           {/* Error message */}
           {state.phase === "error" && state.error && (
             <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-3">
@@ -584,7 +683,9 @@ export function DownloadProgressDialog({
                 </p>
                 {receivedRef.current > 0 && (
                   <p className="mt-1 text-[11px] text-primary">
-                    Click resume to continue from where it stopped.
+                    {isHlsRef.current
+                      ? "Click restart to re-download the video from the beginning."
+                      : "Click resume to continue from where it stopped."}
                   </p>
                 )}
               </div>
@@ -595,7 +696,9 @@ export function DownloadProgressDialog({
           {state.phase === "aborted" && (
             <p className="text-xs text-muted-foreground">
               {receivedRef.current > 0
-                ? `Cancelled at ${formatBytes(receivedRef.current)}. Click resume to continue.`
+                ? isHlsRef.current
+                  ? `Cancelled at ${formatBytes(receivedRef.current)}. HLS streams can't resume mid-file — click restart to download from the beginning.`
+                  : `Cancelled at ${formatBytes(receivedRef.current)}. Click resume to continue.`
                 : "Download cancelled."}
             </p>
           )}
@@ -623,7 +726,7 @@ export function DownloadProgressDialog({
                 {isPaused ? (
                   <>
                     <Play className="h-3.5 w-3.5" />
-                    Resume
+                    {isHlsRef.current ? "Restart" : "Resume"}
                   </>
                 ) : (
                   <>
@@ -666,15 +769,21 @@ export function DownloadProgressDialog({
 
           {(state.phase === "error" || state.phase === "aborted") && (
             <>
-              {receivedRef.current > 0 && effectiveUrlRef.current && (
+              {effectiveUrlRef.current && (
                 <Button
                   size="sm"
                   variant="default"
                   className="gap-1.5"
                   onClick={async () => {
-                    // Resume from where we left off — re-fetch with a Range
-                    // header and append the remaining bytes to the same
-                    // chunks array, then auto-save.
+                    if (isHlsRef.current) {
+                      // HLS: /api/stream ignores Range, so restart from
+                      // scratch (clears chunks + received) to avoid a
+                      // doubled / corrupted file.
+                      await restartHlsDownload(state.filename);
+                      return;
+                    }
+                    // Non-HLS: resume from where we left off — re-fetch
+                    // with a Range header and append the remaining bytes.
                     const controller = new AbortController();
                     abortRef.current = controller;
                     pauseRef.current = false;
@@ -712,7 +821,9 @@ export function DownloadProgressDialog({
                   }}
                 >
                   <RotateCcw className="h-3.5 w-3.5" />
-                  Resume from {formatBytes(receivedRef.current)}
+                  {isHlsRef.current
+                    ? "Restart download"
+                    : `Resume from ${formatBytes(receivedRef.current)}`}
                 </Button>
               )}
               <Button
