@@ -2003,3 +2003,148 @@ The 3 screenshots showed an HLS download of a `1080p_602x1080.ts` file:
 2. Add download queue management (pause/cancel multiple concurrent downloads).
 3. Improve `/api/size` performance with streaming/partial estimates.
 4. Add keyboard shortcuts (Esc to close, Space to pause/resume).
+
+---
+
+## Phase H-11 — Segment-by-Segment HLS Download (Slow Connection Fix) (2025-07-30)
+
+### Project Status
+
+Stable. The user reported that downloads still fail with "network error" at
+15.3 MB despite the Phase H-10 fixes. The user has a **1 Mbps internet
+connection** (~125 KB/s), which is the key constraint.
+
+### Root Cause
+
+The Phase H-10 fixes addressed HLS resume corruption and binary corruption,
+but the **fundamental architecture problem** remained: `/api/stream` opens
+ONE long-lived HTTP connection that downloads ALL HLS segments server-side
+and pipes them to the client. At 1 Mbps:
+- A 40 MB file takes ~5+ minutes to transfer
+- The Next.js serverless function has `maxDuration = 300` (5 min)
+- The connection drops mid-stream → "network error" at whatever byte it
+  reached (15.3 MB in the user's case)
+- There was NO way to resume — HLS "restart" cleared everything from 0
+
+The old architecture was fundamentally incompatible with slow connections.
+
+### Solution: Segment-by-Segment Downloading
+
+Replaced the single-stream `/api/stream` approach for HLS with a new
+**segment-by-segment** architecture where each segment is a separate small
+HTTP request:
+
+1. **`/api/hls-segments`** (NEW) — resolves the m3u8 playlist into a JSON
+   array of segments with URLs, AES-128 key info, durations, and byte sizes
+   (via parallel HEAD requests). Returns the total size so the client can
+   show an accurate progress bar.
+
+2. **`/api/hls-segment`** (NEW) — fetches + decrypts a SINGLE segment and
+   returns the raw .ts bytes. Each request is short-lived (~200ms-3s for a
+   typical 2-10 MB segment), so it NEVER hits the server timeout — even on
+   a 1 Mbps connection. Includes 1 retry with 400ms backoff for transient
+   failures. Handles AES-128-CBC decryption server-side (key URL + IV
+   passed as query params).
+
+3. **Client-side `downloadHlsBySegment()`** (NEW in download-progress-dialog) —
+   - Fetches the segment list ONCE via `/api/hls-segments`
+   - Downloads each segment individually via `/api/hls-segment`
+   - **Per-segment retry: 3 attempts** with increasing backoff (800ms, 1600ms)
+     before giving up — transient network errors don't kill the whole download
+   - **True resume:** tracks `hlsSegmentIndexRef` — on pause/error/retry,
+     continues from the next segment. Segments already downloaded stay in
+     `chunksRef`. No restart-from-zero, no doubling, no corruption.
+   - Progress is accurate: total = sum of segment sizes, received = sum of
+     downloaded segment bytes
+
+### Key Behavioral Changes
+
+- **HLS pause/resume now works properly:** Previously HLS "resume" restarted
+  from 0 (because /api/stream ignores Range). Now it continues from the last
+  successful segment. The pause button label changed back to "Resume" (from
+  "Restart"), and the amber hint now says "Paused at X MB. Click resume to
+  continue from here — no need to start over."
+
+- **HLS error/abort retry resumes from the failure point:** The retry button
+  now shows "Resume from X MB" (or "Retry download" if nothing downloaded
+  yet) and continues from `hlsSegmentIndexRef`.
+
+- **No more server timeouts:** Each segment request is a separate short
+  fetch (~200ms-3s). Even at 1 Mbps, a 50 MB video = ~25 segments × ~2 MB
+  each = 25 separate requests, none of which individually exceeds the
+  60s `maxDuration`.
+
+- **Removed `/api/size` pre-fetch for HLS:** The segment list endpoint
+  returns the total as part of its JSON response, so the separate size
+  pre-fetch is no longer needed (one less request).
+
+- **Removed `restartHlsDownload()`:** No longer needed — the segment
+  downloader's resume capability makes restart-from-zero unnecessary.
+
+### Verification Results (agent-browser E2E)
+
+1. **HLS segment download (47.3 MB test stream):**
+   - Fetch `https://test-streams.mux.dev/pts_shift/master.m3u8` → 6 sources
+   - "Download with progress" → dialog opens, `/api/hls-segments` resolves
+     42 segments + total 47.3 MB, download starts at 2% (826.9 KB)
+   - Progress: 2% → 32 MB, speed 1.5 MB/s, ETA ~10.1s remaining (positive)
+
+2. **Pause/Resume test (the critical fix):**
+   - Paused at 33.4 MB → amber hint "Paused at 33.4 MB. Click resume to
+     continue from here — no need to start over." + button "Resume"
+   - Clicked Resume → download continued from **35.5 MB** (NOT from 0!)
+   - Total stayed 47.3 MB (not doubled) — confirms no corruption
+
+3. **Download completion after resume:**
+   - Completed cleanly: **47.3 MB / 47.3 MB**, status "Saved", "Done in 45.6 s"
+   - Toast: "Download complete — saved to your downloads"
+   - "Saved to downloads" badge + "Save again" button
+
+4. **Server log:** All 42 `/api/hls-segment` calls returned **200 OK**
+   (180ms-2.7s each). No 502s, no 500s, no errors. Segment indexes confirmed
+   resume continued from segment 12 (where pause occurred around segment 11).
+
+5. **vids.st extraction:** Still works — `https://vids.st/v/5524` extracts
+   2 sources (embed iframe "Best" + HLS direct), title and thumbnail captured.
+
+6. **Lint:** 0 errors / 0 warnings.
+
+### Files Modified / Created
+- **NEW** `src/app/api/hls-segments/route.ts` — resolves m3u8 → JSON segment
+  list with URLs, keys, sizes, total.
+- **NEW** `src/app/api/hls-segment/route.ts` — proxies + decrypts a single
+  segment, returns raw bytes (short request, no timeout risk).
+- `src/components/download-progress-dialog.tsx` — added
+  `downloadHlsBySegment()` (segment-by-segment downloader with per-segment
+  retry + true resume), `hlsSegmentsRef` + `hlsSegmentIndexRef` refs, rewrote
+  download start/pause/retry paths to use segment downloader for HLS, removed
+  `restartHlsDownload()`, updated labels/hints.
+
+### Why This Fixes the User's Issue
+
+The user's "Failed at 15.3 MB / network error" was caused by the single
+long-lived `/api/stream` connection dropping at 15.3 MB (server timeout or
+network interruption on their 1 Mbps connection). With the new architecture:
+
+1. Each segment is a separate ~2 MB request that completes in 2-15 seconds
+   even at 1 Mbps — well within the 60s timeout.
+2. If a single segment request fails, it's retried 3 times automatically
+   before the download gives up.
+3. If the user pauses or the connection drops, clicking "Resume" continues
+   from the last successful segment — no re-downloading the first 15.3 MB.
+
+### Unresolved Issues / Risks
+- For very large HLS videos (hundreds of segments), the initial
+  `/api/hls-segments` call (which HEADs every segment for size) can take
+  10-20s. This is a one-time cost; the download itself starts immediately
+  after. Could be optimized with streaming size resolution in a future phase.
+- In-memory Blob accumulation still applies (segments are held in memory
+  until the download completes). For very large videos this uses RAM, but
+  modern browsers handle multi-hundred-MB Blobs fine.
+
+### Priority Recommendations for Next Phase
+1. Add a "Download all qualities" batch action.
+2. Show per-segment progress (mini-segment indicator) for large HLS videos.
+3. Add download speed limiter / concurrency control for users on metered
+   connections.
+4. Persist download state to localStorage so a page refresh can resume.

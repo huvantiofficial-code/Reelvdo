@@ -122,9 +122,25 @@ export function DownloadProgressDialog({
   // Track whether the source is HLS/DASH. For these, /api/stream concatenates
   // all segments server-side and IGNORES Range headers — so "resume from byte
   // N" is impossible (it would re-stream from segment 0 and append to existing
-  // chunks, producing a doubled + corrupted file). For HLS we must RESTART
-  // from scratch on resume/retry (clear chunks, reset received to 0).
+  // chunks, producing a doubled + corrupted file). For HLS we use the new
+  // segment-by-segment downloader (downloadHlsBySegment) which fetches each
+  // segment via /api/hls-segment — this survives slow connections (1 Mbps)
+  // because each request is small and individually retryable/resumable.
   const isHlsRef = useRef(false);
+  // Resolved segment list for HLS downloads (fetched once from
+  // /api/hls-segments). Each entry: {url, key?, iv?, duration, size}.
+  const hlsSegmentsRef = useRef<
+    Array<{
+      url: string;
+      key?: { method: string; uri: string; iv?: string };
+      duration?: number;
+      size: number | null;
+    }>
+  >([]);
+  // Index of the next segment to download. On resume after a pause/error,
+  // we continue from this index — segments before it are already in
+  // chunksRef. This is the key to resumable HLS downloads on slow connections.
+  const hlsSegmentIndexRef = useRef(0);
 
   const reset = useCallback(() => {
     setState({
@@ -145,6 +161,8 @@ export function DownloadProgressDialog({
     effectiveUrlRef.current = null;
     pageUrlRef.current = undefined;
     isHlsRef.current = false;
+    hlsSegmentsRef.current = [];
+    hlsSegmentIndexRef.current = 0;
   }, []);
 
   /** Build a Blob from the accumulated chunks, create an object URL, and
@@ -171,17 +189,16 @@ export function DownloadProgressDialog({
     return url;
   }, []);
 
-  /** Core download loop. Fetches the URL (with optional Range header for
-   *  resume) and streams chunks into the in-memory chunks array. Returns
-   *  when the stream ends, or throws on error. Respects pauseRef — when
-   *  paused, it stops reading and returns so resume can re-fetch with a
-   *  Range header and continue appending to the same chunks array.
+  /** Core download loop for NON-HLS sources (direct MP4 / proxied). Fetches
+   *  the URL (with optional Range header for resume) and streams chunks into
+   *  the in-memory chunks array. Returns when the stream ends, or throws on
+   *  error. Respects pauseRef — when paused, it stops reading and returns so
+   *  resume can re-fetch with a Range header and continue appending to the
+   *  same chunks array.
    *
-   *  NOTE: `rangeFrom` is ONLY meaningful for direct/proxied MP4 downloads
-   *  where the server honours `Range: bytes=N-`. For HLS/DASH the stream
-   *  endpoint ignores Range and always re-streams from segment 0, so the
-   *  caller MUST clear chunks + reset received to 0 before calling this
-   *  (see `restartHlsDownload`). */
+   *  HLS/DASH sources use `downloadHlsBySegment` instead (segment-by-segment
+   *  downloading via /api/hls-segment), which is resilient to slow
+   *  connections and supports true per-segment resume. */
   const downloadLoop = async (
     fetchUrl: string,
     controller: AbortController,
@@ -251,54 +268,172 @@ export function DownloadProgressDialog({
     return "done";
   };
 
-  /** Restart an HLS/DASH download from scratch. /api/stream ignores Range
-   *  headers, so the only correct way to "resume" an HLS download is to
-   *  clear the accumulated chunks and re-stream from segment 0. This
-   *  prevents the doubled-size / corrupted-file bug that occurred when we
-   *  appended a fresh full stream to the existing partial chunks. */
-  const restartHlsDownload = useCallback(async (filename: string) => {
-    const controller = new AbortController();
-    abortRef.current = controller;
-    pauseRef.current = false;
-    // Clear everything — we're starting over.
-    chunksRef.current = [];
-    receivedRef.current = 0;
-    setState((s) => ({
-      ...s,
-      phase: "fetching",
-      received: 0,
-      error: null,
-      finishedAt: null,
-      // Keep the estimated total so the bar still shows a target, but mark
-      // it approx since we're re-measuring.
-      approx: true,
-    }));
-    try {
-      if (!effectiveUrlRef.current) throw new Error("No download URL");
-      const result = await downloadLoop(effectiveUrlRef.current, controller);
-      if (result === "paused") {
-        setState((s) => ({ ...s, phase: "downloading" }));
-        return;
+  /** Download an HLS video segment-by-segment. This is the robust download
+   *  path for HLS sources — it fetches the playlist once via
+   *  /api/hls-segments (getting a JSON list of segment URLs + sizes), then
+   *  downloads each segment individually via /api/hls-segment.
+   *
+   *  Benefits over the old /api/stream approach:
+   *  - Each request is small (one segment, ~2–10 MB) so it never hits the
+   *    server timeout — works even on 1 Mbps connections.
+   *  - Per-segment retry: a failed segment is retried up to 3 times before
+   *    giving up, so transient network errors don't kill the whole download.
+   *  - True resume: on pause/error/retry we continue from
+   *    hlsSegmentIndexRef — segments already downloaded stay in chunksRef.
+   *    No restart-from-zero, no doubled size, no corruption.
+   *  - Accurate progress: the total is the sum of segment sizes (measured
+   *    via HEAD requests), so the bar reflects reality.
+   *
+   *  `startIndex` lets the caller resume from a specific segment (defaults
+   *  to hlsSegmentIndexRef.current, which is updated as we go). */
+  const downloadHlsBySegment = useCallback(
+    async (controller: AbortController, startIndex?: number) => {
+      const pageUrl = pageUrlRef.current;
+      // Resolve the segment list once (if not already done).
+      if (hlsSegmentsRef.current.length === 0) {
+        setState((s) => ({ ...s, phase: "fetching" }));
+        const segsUrl = `/api/hls-segments?url=${encodeURIComponent(
+          effectiveUrlRef.current || ""
+        )}${pageUrl ? `&page=${encodeURIComponent(pageUrl)}` : ""}`;
+        const segRes = await fetch(segsUrl, { signal: controller.signal });
+        if (!segRes.ok) {
+          throw new Error(`Could not load playlist (${segRes.status})`);
+        }
+        const segData = (await segRes.json()) as {
+          ok: boolean;
+          segments?: Array<{
+            url: string;
+            key?: { method: string; uri: string; iv?: string };
+            duration?: number;
+            size: number | null;
+          }>;
+          total?: number | null;
+          error?: string;
+        };
+        if (!segData.ok || !segData.segments?.length) {
+          throw new Error(segData.error || "No segments found");
+        }
+        hlsSegmentsRef.current = segData.segments;
+        const total = segData.total ?? null;
+        if (total && total > 0) {
+          setState((s) => ({ ...s, total, approx: false }));
+        }
       }
-      const blobUrl = autoSaveBlob(filename);
-      setState((s) => ({
-        ...s,
-        phase: "done",
-        finishedAt: Date.now(),
-        blobUrl,
-      }));
-      toast.success("Download complete — saved to your downloads");
-    } catch (e) {
-      if ((e as Error).name === "AbortError") return;
-      setState((s) => ({
-        ...s,
-        phase: "error",
-        finishedAt: Date.now(),
-        error: e instanceof Error ? e.message : "Restart failed",
-      }));
-      toast.error("Restart failed");
-    }
-  }, [autoSaveBlob]);
+
+      const segments = hlsSegmentsRef.current;
+      const fromIdx =
+        startIndex ?? hlsSegmentIndexRef.current;
+
+      setState((s) => ({ ...s, phase: "downloading" }));
+
+      for (let i = fromIdx; i < segments.length; i++) {
+        // Check pause before each segment — if paused, record where we are
+        // and return so resume can continue from here.
+        if (pauseRef.current) {
+          hlsSegmentIndexRef.current = i;
+          setState((s) => ({ ...s, phase: "downloading" }));
+          return "paused";
+        }
+        // Check abort.
+        if (controller.signal.aborted) {
+          hlsSegmentIndexRef.current = i;
+          return "aborted";
+        }
+
+        const seg = segments[i];
+        // Build the /api/hls-segment URL with key/iv/index for decryption.
+        const params = new URLSearchParams({
+          url: seg.url,
+          index: String(i + 1),
+        });
+        if (pageUrl) params.set("page", pageUrl);
+        if (seg.key?.uri) {
+          params.set("key", seg.key.uri);
+          if (seg.key.iv) params.set("iv", seg.key.iv);
+        }
+        const segmentApiUrl = `/api/hls-segment?${params.toString()}`;
+
+        // Fetch this single segment, retrying up to 3 times on transient
+        // errors (network drops, 502s). Each retry has an increasing backoff.
+        let segBuf: Uint8Array | null = null;
+        let segError: string | null = null;
+        for (let attempt = 0; attempt < 3 && !segBuf; attempt++) {
+          if (controller.signal.aborted) break;
+          try {
+            const r = await fetch(segmentApiUrl, {
+              signal: controller.signal,
+            });
+            if (!r.ok) {
+              segError = `Segment ${i + 1}: HTTP ${r.status}`;
+              if (attempt < 2) {
+                await new Promise((res) =>
+                  setTimeout(res, 800 * (attempt + 1))
+                );
+              }
+              continue;
+            }
+            const buf = await r.arrayBuffer();
+            if (buf.byteLength === 0) {
+              segError = `Segment ${i + 1}: empty response`;
+              if (attempt < 2) {
+                await new Promise((res) =>
+                  setTimeout(res, 800 * (attempt + 1))
+                );
+              }
+              continue;
+            }
+            segBuf = new Uint8Array(buf);
+          } catch (e) {
+            if ((e as Error).name === "AbortError") break;
+            segError =
+              e instanceof Error ? e.message : `Segment ${i + 1} failed`;
+            if (attempt < 2) {
+              await new Promise((res) => setTimeout(res, 800 * (attempt + 1)));
+            }
+          }
+        }
+
+        if (controller.signal.aborted) {
+          hlsSegmentIndexRef.current = i;
+          return "aborted";
+        }
+
+        if (!segBuf) {
+          // All retries failed — throw so the caller can show the error.
+          // The segment index is saved so "resume" continues from here.
+          hlsSegmentIndexRef.current = i;
+          throw new Error(
+            segError || `Segment ${i + 1} of ${segments.length} failed`
+          );
+        }
+
+        // Success — accumulate the segment bytes.
+        chunksRef.current.push(segBuf);
+        receivedRef.current += segBuf.byteLength;
+        hlsSegmentIndexRef.current = i + 1;
+
+        // Update the UI. Bump total if this segment was larger than expected
+        // or if the estimate was too low.
+        setState((s) => {
+          let total = s.total;
+          if (total && receivedRef.current > total) {
+            total = receivedRef.current;
+          }
+          return {
+            ...s,
+            received: receivedRef.current,
+            total,
+            phase: "downloading",
+          };
+        });
+      }
+
+      // All segments downloaded.
+      hlsSegmentIndexRef.current = segments.length;
+      return "done";
+    },
+    []
+  );
 
   // Start the download when a source arrives.
   useEffect(() => {
@@ -324,45 +459,14 @@ export function DownloadProgressDialog({
       filename,
     });
 
-    // For HLS/DASH, the /api/stream response has no Content-Length (segments
-    // are concatenated server-side). Pre-fetch the total via /api/size so we
-    // can show a real % bar.
-    let sizeTotal: number | null = null;
-    let sizeApprox = false;
-    if (isHlsRef.current) {
-      const sizeUrl = `/api/size?url=${encodeURIComponent(source.url)}${
-        source.pageUrl ? `&page=${encodeURIComponent(source.pageUrl)}` : ""
-      }`;
-      fetch(sizeUrl, { signal: controller.signal })
-        .then((r) => r.json())
-        .then((data: { ok: boolean; total?: number | null; estimated?: number | null }) => {
-          if (data.ok) {
-            const measured = typeof data.total === "number" && data.total > 0 ? data.total : null;
-            const est = typeof data.estimated === "number" && data.estimated > 0 ? data.estimated : null;
-            if (measured) {
-              sizeTotal = measured;
-              sizeApprox = false;
-            } else if (est) {
-              sizeTotal = est;
-              sizeApprox = true;
-            }
-            if (sizeTotal) {
-              setState((s) => ({
-                ...s,
-                total: s.total ?? sizeTotal,
-                approx: s.total == null ? sizeApprox : s.approx,
-              }));
-            }
-          }
-        })
-        .catch(() => {
-          // ignore - indeterminate progress is fine
-        });
-    }
+    // For HLS/DASH we no longer use /api/size separately — the segment
+    // downloader (/api/hls-segments) returns the total as part of its
+    // JSON response. So we skip the separate size pre-fetch for HLS.
 
     (async () => {
       try {
-        // Refresh the source URL before downloading.
+        // Refresh the source URL before downloading (non-HLS only — HLS
+        // sources are resolved fresh by /api/hls-segments).
         let effectiveSource: VideoSource = source;
         if (
           source.pageUrl &&
@@ -397,14 +501,23 @@ export function DownloadProgressDialog({
           }
         }
 
-        const downloadUrl = downloadUrlFor(effectiveSource);
-        effectiveUrlRef.current = downloadUrl;
+        // For HLS/DASH: use the source URL directly (the segment downloader
+        // will resolve it via /api/hls-segments). For direct/proxied: use
+        // the download URL (which may be /api/proxy with refresh params).
+        if (isHlsRef.current) {
+          effectiveUrlRef.current = source.url;
+        } else {
+          effectiveUrlRef.current = downloadUrlFor(effectiveSource);
+        }
 
-        // Run the download loop. No file-manager prompt — chunks accumulate
-        // in memory and the file is auto-saved on completion.
-        const result = await downloadLoop(downloadUrl, controller);
-        if (result === "paused") {
-          // Download was paused — wait for resume.
+        // Run the appropriate download path.
+        const result = isHlsRef.current
+          ? await downloadHlsBySegment(controller)
+          : await downloadLoop(effectiveUrlRef.current, controller);
+
+        if (result === "paused" || result === "aborted") {
+          // Download was paused/aborted — wait for resume. The segment
+          // index (for HLS) or received bytes (for direct) are already saved.
           setState((s) => ({ ...s, phase: "downloading" }));
           return;
         }
@@ -464,13 +577,35 @@ export function DownloadProgressDialog({
     setState((s) => ({ ...s }));
 
     if (wasPaused) {
-      // Resuming. For HLS/DASH the /api/stream endpoint ignores Range headers
-      // and always re-streams from segment 0 — so we MUST restart from
-      // scratch (clear chunks, reset received) instead of appending, otherwise
-      // we'd produce a doubled + corrupted file. For direct MP4 we use a
-      // Range header to continue from where we left off.
+      // Resuming. For HLS/DASH the segment downloader continues from
+      // hlsSegmentIndexRef — segments already downloaded stay in chunksRef,
+      // so we resume from the next segment (no restart, no doubling). For
+      // direct MP4 we use a Range header to continue from receivedRef.
       if (isHlsRef.current) {
-        await restartHlsDownload(state.filename);
+        if (abortRef.current) {
+          setState((s) => ({ ...s, phase: "downloading", error: null }));
+          try {
+            const result = await downloadHlsBySegment(abortRef.current);
+            if (result === "paused" || result === "aborted") return;
+            const blobUrl = autoSaveBlob(state.filename);
+            setState((s) => ({
+              ...s,
+              phase: "done",
+              finishedAt: Date.now(),
+              blobUrl,
+            }));
+            toast.success("Download complete — saved to your downloads");
+          } catch (e) {
+            if ((e as Error).name === "AbortError") return;
+            setState((s) => ({
+              ...s,
+              phase: "error",
+              finishedAt: Date.now(),
+              error: e instanceof Error ? e.message : "Resume failed",
+            }));
+            toast.error("Resume failed");
+          }
+        }
         return;
       }
       // Non-HLS: re-fetch with Range header to continue from receivedRef.
@@ -656,14 +791,13 @@ export function DownloadProgressDialog({
             )}
           </div>
 
-          {/* Paused HLS hint — resume restarts from scratch for streams */}
-          {isPaused && isHlsRef.current && (
+          {/* Paused hint — resume continues from the last segment/byte */}
+          {isPaused && (
             <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-2.5">
               <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
               <p className="text-[11px] text-amber-700 dark:text-amber-300">
-                Paused. HLS streams can&apos;t resume mid-file — clicking
-                &ldquo;Restart&rdquo; will re-download the video from the
-                beginning.
+                Paused at {formatBytes(receivedRef.current)}. Click resume to
+                continue from here — no need to start over.
               </p>
             </div>
           )}
@@ -683,9 +817,7 @@ export function DownloadProgressDialog({
                 </p>
                 {receivedRef.current > 0 && (
                   <p className="mt-1 text-[11px] text-primary">
-                    {isHlsRef.current
-                      ? "Click restart to re-download the video from the beginning."
-                      : "Click resume to continue from where it stopped."}
+                    Click resume to continue from where it stopped.
                   </p>
                 )}
               </div>
@@ -696,9 +828,7 @@ export function DownloadProgressDialog({
           {state.phase === "aborted" && (
             <p className="text-xs text-muted-foreground">
               {receivedRef.current > 0
-                ? isHlsRef.current
-                  ? `Cancelled at ${formatBytes(receivedRef.current)}. HLS streams can't resume mid-file — click restart to download from the beginning.`
-                  : `Cancelled at ${formatBytes(receivedRef.current)}. Click resume to continue.`
+                ? `Cancelled at ${formatBytes(receivedRef.current)}. Click resume to continue.`
                 : "Download cancelled."}
             </p>
           )}
@@ -726,7 +856,7 @@ export function DownloadProgressDialog({
                 {isPaused ? (
                   <>
                     <Play className="h-3.5 w-3.5" />
-                    {isHlsRef.current ? "Restart" : "Resume"}
+                    Resume
                   </>
                 ) : (
                   <>
@@ -776,10 +906,41 @@ export function DownloadProgressDialog({
                   className="gap-1.5"
                   onClick={async () => {
                     if (isHlsRef.current) {
-                      // HLS: /api/stream ignores Range, so restart from
-                      // scratch (clears chunks + received) to avoid a
-                      // doubled / corrupted file.
-                      await restartHlsDownload(state.filename);
+                      // HLS: resume from the last successful segment.
+                      // hlsSegmentIndexRef points to the next segment to
+                      // download, so segments before it are already in
+                      // chunksRef. No restart, no doubling.
+                      const controller = new AbortController();
+                      abortRef.current = controller;
+                      pauseRef.current = false;
+                      setState((s) => ({
+                        ...s,
+                        phase: "downloading",
+                        error: null,
+                        finishedAt: null,
+                      }));
+                      try {
+                        const result = await downloadHlsBySegment(controller);
+                        if (result === "done") {
+                          const blobUrl = autoSaveBlob(state.filename);
+                          setState((s) => ({
+                            ...s,
+                            phase: "done",
+                            finishedAt: Date.now(),
+                            blobUrl,
+                          }));
+                          toast.success("Download complete — saved to your downloads");
+                        }
+                      } catch (e) {
+                        if ((e as Error).name === "AbortError") return;
+                        setState((s) => ({
+                          ...s,
+                          phase: "error",
+                          finishedAt: Date.now(),
+                          error: e instanceof Error ? e.message : "Retry failed",
+                        }));
+                        toast.error("Retry failed");
+                      }
                       return;
                     }
                     // Non-HLS: resume from where we left off — re-fetch
@@ -822,7 +983,9 @@ export function DownloadProgressDialog({
                 >
                   <RotateCcw className="h-3.5 w-3.5" />
                   {isHlsRef.current
-                    ? "Restart download"
+                    ? receivedRef.current > 0
+                      ? `Resume from ${formatBytes(receivedRef.current)}`
+                      : "Retry download"
                     : `Resume from ${formatBytes(receivedRef.current)}`}
                 </Button>
               )}
