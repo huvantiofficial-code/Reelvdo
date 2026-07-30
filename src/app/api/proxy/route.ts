@@ -4,7 +4,11 @@ import { refreshSourceUrl } from "@/lib/refresh";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 1200; // 20 minutes — large video files need time
+// Vercel caps: Hobby=60s, Pro=300s, Enterprise=900s. 300s is the safest value
+// that works on Pro+ and is silently capped to 60s on Hobby (still functional
+// for smaller files). The segment-by-segment HLS downloader avoids long-lived
+// connections entirely, so this only affects direct MP4 range streaming.
+export const maxDuration = 300;
 
 function corsHeaders(): Record<string, string> {
   return {

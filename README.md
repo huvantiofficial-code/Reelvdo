@@ -78,6 +78,8 @@ This project is Vercel-ready out of the box.
 
 - **Fetching**: Vercel serverless has no `curl` binary, so the fetch layer transparently falls back to native `fetch` (same browser-like headers). Cloudflare-protected hosts may be harder to reach than on a local machine, but the vast majority of sites work.
 - **History**: the filesystem is read-only except `/tmp`, so history is stored ephemerally at `file:/tmp/reel.db` (tables auto-created on first request). It survives within a warm instance but is not shared across instances — perfectly fine for a personal tool. Set `DATABASE_URL` for persistence.
+- **HLS downloads (slow-connection friendly)**: HLS videos are downloaded segment-by-segment — each `.ts` segment is a separate short request (`/api/hls-segment`, ~1–3s each) that never hits the serverless timeout, even on a 1 Mbps connection. Pause/resume continues from the last successful segment (no restart-from-zero). The legacy long-lived `/api/stream` route is kept only as a fallback for direct MP4 downloads.
+- **Function timeouts**: `vercel.json` pins each route's `maxDuration` to a value compatible with Vercel's plan limits (60s for metadata routes, 300s for streaming routes). Upgrade to Pro for the full 300s on `/api/stream` and `/api/proxy`; Hobby silently caps them at 60s (still functional for smaller files).
 
 ---
 

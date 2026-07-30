@@ -1,0 +1,32 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "buildCommand": "next build",
+  "devCommand": "next dev -p 3000",
+  "installCommand": "bun install",
+  "regions": ["iad1"],
+  "functions": {
+    "src/app/api/extract/route.ts": { "maxDuration": 60 },
+    "src/app/api/stream/route.ts": { "maxDuration": 300 },
+    "src/app/api/proxy/route.ts": { "maxDuration": 300 },
+    "src/app/api/size/route.ts": { "maxDuration": 60 },
+    "src/app/api/playlist/route.ts": { "maxDuration": 60 },
+    "src/app/api/hls-segments/route.ts": { "maxDuration": 60 },
+    "src/app/api/hls-segment/route.ts": { "maxDuration": 60 },
+    "src/app/api/refresh/route.ts": { "maxDuration": 60 },
+    "src/app/api/insights/route.ts": { "maxDuration": 60 },
+    "src/app/api/stats/route.ts": { "maxDuration": 60 },
+    "src/app/api/history/route.ts": { "maxDuration": 60 }
+  },
+  "headers": [
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        { "key": "Access-Control-Allow-Origin", "value": "*" },
+        { "key": "Access-Control-Allow-Methods", "value": "GET,POST,HEAD,OPTIONS" },
+        { "key": "Access-Control-Allow-Headers", "value": "Range,Accept,Content-Type" },
+        { "key": "Access-Control-Expose-Headers", "value": "Content-Range,Content-Length,Accept-Ranges,Content-Type,Content-Disposition" }
+      ]
+    }
+  ]
+}
