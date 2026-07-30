@@ -2120,6 +2120,66 @@ async function extractPorndr(html: string, finalUrl: string): Promise<VideoSourc
 }
 
 /* ------------------------------------------------------------------ */
+/* Site: ukdevilz (ukdevilz.com) — tube site using JW Player.           */
+/*   Watch URL pattern: /watch/{id1}_{id2}                              */
+/*   The page embeds a JW Player setup JSON with "file" entries pointing */
+/*   to cdn.pvvstream.pro / cdn2.pvvstream.pro MP4 files with a signed   */
+/*   `secure=` token. The page ALSO contains a fake placeholder URL at    */
+/*   /videofile/{id1}_{id2}.mp4 which returns HTTP 404 — we must skip    */
+/*   that. Only "file" entries whose path includes /{id1}/{id2}/ are for */
+/*   the current video; the page also lists related-video URLs with      */
+/*   different id pairs.                                                */
+/* ------------------------------------------------------------------ */
+function extractUkdevilz(html: string, finalUrl: string): VideoSource[] | null {
+  const sources: VideoSource[] = [];
+  const seen = new Set<string>();
+
+  // Extract the video id pair from the watch URL: /watch/-192485747_456239918
+  let idPair: string | null = null;
+  const watchM = finalUrl.match(/\/watch\/(-?\d+)_(\d+)/i);
+  if (watchM) {
+    idPair = `${watchM[1]}/${watchM[2]}`;
+  }
+
+  // JW Player setup JSON contains entries like:
+  //   "file":"https://cdn.pvvstream.pro/videos/-192485747/456239918/vid_360p.mp4?rs=360000\u0026rb=1398101\u0026secure=..."
+  // \u0026 is JSON-escaped &. We match the full URL up to the closing quote.
+  const fileRe = /"file"\s*:\s*"(https?:\\?\/\\?\/[^"]*?pvvstream\.pro[^"]*?\.mp4[^"]*)"/gi;
+  let m: RegExpExecArray | null;
+  while ((m = fileRe.exec(html)) !== null) {
+    // Unescape JSON \u0026 → & and \u002F → / (just in case).
+    let url = m[1].replace(/\\u0026/gi, "&").replace(/\\\//g, "/");
+    // Some pages escape the whole URL with backslashes.
+    url = url.replace(/\\\//g, "/");
+    if (seen.has(url)) continue;
+    // Only keep URLs for the CURRENT video (matching id pair). The page
+    // also lists related videos with different id pairs — skip those.
+    if (idPair && !url.includes(`/${idPair}/`)) continue;
+    seen.add(url);
+    // Extract quality from the filename: vid_360p.mp4, vid_240p.mp4, tr_720p.mp4
+    const qM = url.match(/(?:vid|tr|v)_(\d+)p\.mp4/i);
+    const quality = qM ? `${qM[1]}p` : "MP4";
+    sources.push({
+      url,
+      type: "mp4",
+      ext: "mp4",
+      label: `MP4 · ${quality}`,
+      quality,
+      pageUrl: finalUrl,
+    });
+  }
+
+  // Sort by quality descending (higher number first).
+  sources.sort((a, b) => {
+    const qa = parseInt((a.quality || "0").replace(/\D/g, ""), 10) || 0;
+    const qb = parseInt((b.quality || "0").replace(/\D/g, ""), 10) || 0;
+    return qb - qa;
+  });
+
+  return sources.length ? sources : null;
+}
+
+/* ------------------------------------------------------------------ */
 /* Generic helper for captcha-protected hosts: returns a single iframe   */
 /* source pointing to the original URL so the user can open the page in  */
 /* their browser and solve the captcha (Cloudflare Turnstile, hCaptcha,  */
@@ -2274,6 +2334,12 @@ export async function trySiteExtractor(
       // PornDr (porndr.com) — /get_file/{n}/{hash}/{id}/{id}_{quality}.mp4/?v-acctoken=...
       // URLs redirect to ahcdn.com CDN. Requires full video page as referer.
       sources = await extractPorndr(html, finalUrl);
+    } else if (host.includes("ukdevilz")) {
+      // ukdevilz (ukdevilz.com) — JW Player setup JSON contains "file"
+      // entries pointing to cdn.pvvstream.pro MP4 files with signed secure=
+      // tokens. The page also has a fake /videofile/{id}.mp4 placeholder
+      // (returns 404) and related-video URLs — both must be skipped.
+      sources = extractUkdevilz(html, finalUrl);
     } else if (host.includes("spankbang")) {
       // SpankBang — Cloudflare "Just a moment..." interstitial on all pages.
       // Cannot extract server-side; surface as iframe.

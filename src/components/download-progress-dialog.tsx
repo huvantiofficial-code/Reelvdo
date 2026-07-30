@@ -106,14 +106,13 @@ export function DownloadProgressDialog({
   // Track the byte offset for resume. When the download is paused or fails,
   // we can re-fetch with `Range: bytes={received}-` to continue from here.
   const receivedRef = useRef(0);
-  // Track the writable stream (File System Access API) so we can resume
-  // writing to the same file after a pause/reconnect.
-  const writableRef = useRef<{ write: (data: Uint8Array | Blob) => Promise<void>; close: () => Promise<void> } | null>(null);
-  // Track the file handle so we can re-open the writable on resume.
-  const fileHandleRef = useRef<{ createWritable: () => Promise<{ write: (data: Uint8Array | Blob) => Promise<void>; close: () => Promise<void> }> } | null>(null);
-  // Track whether we're using the File System Access API (vs Blob fallback).
-  const useFSApiRef = useRef(false);
-  // For Blob fallback: accumulate chunks.
+  // Accumulate downloaded chunks in memory. When the download completes we
+  // build a single Blob and trigger a hidden <a download> click so the file
+  // saves to the user's default download folder — NO native "Save As"
+  // file-manager prompt is shown (the user explicitly asked us to stop
+  // showing that prompt). For very large files this does use memory, but
+  // modern browsers handle multi-hundred-MB Blobs fine and the UX is far
+  // smoother than repeatedly interrupting the user with a picker dialog.
   const chunksRef = useRef<Uint8Array[]>([]);
   // Track the effective source URL (after refresh) so resume re-fetches
   // the same URL with a Range header.
@@ -136,19 +135,40 @@ export function DownloadProgressDialog({
     abortRef.current = null;
     pauseRef.current = false;
     receivedRef.current = 0;
-    writableRef.current = null;
-    fileHandleRef.current = null;
-    useFSApiRef.current = false;
     chunksRef.current = [];
     effectiveUrlRef.current = null;
     pageUrlRef.current = undefined;
   }, []);
 
+  /** Build a Blob from the accumulated chunks, create an object URL, and
+   *  trigger a hidden <a download> click so the browser saves the file to
+   *  the user's default download folder. NO "Save As" dialog is shown. */
+  const autoSaveBlob = useCallback((filename: string): string => {
+    const blob = new Blob(chunksRef.current as BlobPart[], {
+      type: "application/octet-stream",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.rel = "noopener";
+    // The link must be in the document for Firefox to fire the click.
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    // Clean up the element after a tick (give the browser time to start the
+    // navigation). The object URL is revoked later via the blobUrl effect.
+    setTimeout(() => {
+      try { document.body.removeChild(a); } catch { /* ignore */ }
+    }, 1000);
+    return url;
+  }, []);
+
   /** Core download loop. Fetches the URL (with optional Range header for
-   *  resume) and streams chunks to the writable (FS API) or chunks array
-   *  (Blob fallback). Returns when the stream ends, or throws on error.
-   *  Respects pauseRef — when paused, it stops reading and returns, leaving
-   *  the writable open for resume. */
+   *  resume) and streams chunks into the in-memory chunks array. Returns
+   *  when the stream ends, or throws on error. Respects pauseRef — when
+   *  paused, it stops reading and returns so resume can re-fetch with a
+   *  Range header and continue appending to the same chunks array. */
   const downloadLoop = async (
     fetchUrl: string,
     controller: AbortController,
@@ -173,7 +193,7 @@ export function DownloadProgressDialog({
       const totalHeader = res.headers.get("content-length");
       const total = totalHeader ? parseInt(totalHeader, 10) : null;
       if (total && total > 0) {
-        setState((s) => (s.total ? s : { ...s, total }));
+        setState((s) => (s.total ? s : { ...s, total: total + (rangeFrom || 0) }));
       }
     }
 
@@ -191,12 +211,9 @@ export function DownloadProgressDialog({
       if (done) break;
       if (value) {
         receivedRef.current += value.byteLength;
-        // Write to disk (FS API) or accumulate (Blob fallback).
-        if (useFSApiRef.current && writableRef.current) {
-          await writableRef.current.write(value);
-        } else {
-          chunksRef.current.push(value);
-        }
+        // Always accumulate in memory — on completion we build a Blob and
+        // auto-trigger a hidden <a download> click (no Save As prompt).
+        chunksRef.current.push(value);
         // Update UI with received bytes.
         setState((s) => ({
           ...s,
@@ -307,38 +324,8 @@ export function DownloadProgressDialog({
         const downloadUrl = downloadUrlFor(effectiveSource);
         effectiveUrlRef.current = downloadUrl;
 
-        // Try File System Access API first (Chrome/Edge).
-        type FileSystemFileHandleLike = {
-          createWritable: () => Promise<{
-            write: (data: Uint8Array | Blob) => Promise<void>;
-            close: () => Promise<void>;
-          }>;
-        };
-        type ShowSaveFilePickerFn = (opts: {
-          suggestedName?: string;
-        }) => Promise<FileSystemFileHandleLike>;
-        const _window = window as typeof window & {
-          showSaveFilePicker?: ShowSaveFilePickerFn;
-        };
-
-        if (typeof _window.showSaveFilePicker === "function") {
-          try {
-            const handle = await _window.showSaveFilePicker({
-              suggestedName: filename,
-            });
-            fileHandleRef.current = handle;
-            writableRef.current = await handle.createWritable();
-            useFSApiRef.current = true;
-          } catch (e) {
-            if ((e as Error).name === "AbortError") {
-              setState((s) => ({ ...s, phase: "aborted", finishedAt: Date.now() }));
-              return;
-            }
-            // Fall through to Blob fallback.
-          }
-        }
-
-        // Run the download loop.
+        // Run the download loop. No file-manager prompt — chunks accumulate
+        // in memory and the file is auto-saved on completion.
         const result = await downloadLoop(downloadUrl, controller);
         if (result === "paused") {
           // Download was paused — wait for resume.
@@ -346,31 +333,17 @@ export function DownloadProgressDialog({
           return;
         }
 
-        // Download complete.
-        if (useFSApiRef.current && writableRef.current) {
-          await writableRef.current.close();
-          writableRef.current = null;
-        }
-        if (!useFSApiRef.current) {
-          const blob = new Blob(chunksRef.current as BlobPart[], {
-            type: "application/octet-stream",
-          });
-          const blobUrl = URL.createObjectURL(blob);
-          setState((s) => ({
-            ...s,
-            phase: "done",
-            finishedAt: Date.now(),
-            blobUrl,
-          }));
-        } else {
-          setState((s) => ({
-            ...s,
-            phase: "done",
-            finishedAt: Date.now(),
-            blobUrl: null,
-          }));
-        }
-        toast.success("Download complete");
+        // Download complete — build a Blob and auto-trigger a hidden
+        // <a download> click so the file saves to the user's default
+        // download folder WITHOUT showing a "Save As" picker.
+        const blobUrl = autoSaveBlob(filename);
+        setState((s) => ({
+          ...s,
+          phase: "done",
+          finishedAt: Date.now(),
+          blobUrl,
+        }));
+        toast.success("Download complete — saved to your downloads");
       } catch (e) {
         if ((e as Error).name === "AbortError") {
           setState((s) => ({ ...s, phase: "aborted", finishedAt: Date.now() }));
@@ -406,11 +379,6 @@ export function DownloadProgressDialog({
     if (abortRef.current) {
       abortRef.current.abort();
     }
-    // Close the writable if open.
-    if (writableRef.current) {
-      try { writableRef.current.close(); } catch { /* ignore */ }
-      writableRef.current = null;
-    }
   };
 
   const togglePause = async () => {
@@ -421,8 +389,9 @@ export function DownloadProgressDialog({
 
     if (wasPaused) {
       // Resuming — re-fetch with Range header to continue from receivedRef.
-      // The previous downloadLoop returned "paused" and left the writable open.
-      // We need to re-run the download loop with the Range header.
+      // The previous downloadLoop returned "paused" and left the chunks
+      // array intact. We re-run the loop with a Range header so the server
+      // sends only the remaining bytes, which we append to the same array.
       if (effectiveUrlRef.current && abortRef.current) {
         try {
           const result = await downloadLoop(
@@ -434,31 +403,15 @@ export function DownloadProgressDialog({
             // Paused again — wait for next resume.
             return;
           }
-          // Download complete.
-          if (useFSApiRef.current && writableRef.current) {
-            await writableRef.current.close();
-            writableRef.current = null;
-          }
-          if (!useFSApiRef.current) {
-            const blob = new Blob(chunksRef.current as BlobPart[], {
-              type: "application/octet-stream",
-            });
-            const blobUrl = URL.createObjectURL(blob);
-            setState((s) => ({
-              ...s,
-              phase: "done",
-              finishedAt: Date.now(),
-              blobUrl,
-            }));
-          } else {
-            setState((s) => ({
-              ...s,
-              phase: "done",
-              finishedAt: Date.now(),
-              blobUrl: null,
-            }));
-          }
-          toast.success("Download complete");
+          // Download complete — auto-save the file (no Save As prompt).
+          const blobUrl = autoSaveBlob(state.filename);
+          setState((s) => ({
+            ...s,
+            phase: "done",
+            finishedAt: Date.now(),
+            blobUrl,
+          }));
+          toast.success("Download complete — saved to your downloads");
         } catch (e) {
           if ((e as Error).name === "AbortError") return;
           setState((s) => ({
@@ -650,7 +603,8 @@ export function DownloadProgressDialog({
           {/* Done hint */}
           {state.phase === "done" && state.blobUrl && (
             <p className="text-xs text-muted-foreground">
-              Your browser has the file ready. Click save to store it on disk.
+              File saved to your downloads folder. If the save didn’t start
+              automatically, click the button to retry.
             </p>
           )}
         </div>
@@ -691,19 +645,23 @@ export function DownloadProgressDialog({
           )}
 
           {state.phase === "done" && state.blobUrl && (
-            <Button asChild size="sm" className="gap-1.5">
-              <a href={state.blobUrl} download={state.filename}>
-                <Download className="h-3.5 w-3.5" />
-                Save file
-              </a>
-            </Button>
-          )}
-
-          {state.phase === "done" && !state.blobUrl && (
-            <div className="flex items-center gap-1.5 text-xs font-medium text-primary">
-              <CheckCircle2 className="h-3.5 w-3.5" />
-              Saved to disk
-            </div>
+            <>
+              <div className="flex items-center gap-1.5 text-xs font-medium text-primary">
+                <CheckCircle2 className="h-3.5 w-3.5" />
+                Saved to downloads
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                asChild
+                className="gap-1.5"
+              >
+                <a href={state.blobUrl} download={state.filename}>
+                  <Download className="h-3.5 w-3.5" />
+                  Save again
+                </a>
+              </Button>
+            </>
           )}
 
           {(state.phase === "error" || state.phase === "aborted") && (
@@ -714,7 +672,9 @@ export function DownloadProgressDialog({
                   variant="default"
                   className="gap-1.5"
                   onClick={async () => {
-                    // Resume from where we left off.
+                    // Resume from where we left off — re-fetch with a Range
+                    // header and append the remaining bytes to the same
+                    // chunks array, then auto-save.
                     const controller = new AbortController();
                     abortRef.current = controller;
                     pauseRef.current = false;
@@ -725,40 +685,20 @@ export function DownloadProgressDialog({
                       finishedAt: null,
                     }));
                     try {
-                      // Re-open writable if using FS API.
-                      if (useFSApiRef.current && fileHandleRef.current && !writableRef.current) {
-                        writableRef.current = await fileHandleRef.current.createWritable();
-                      }
                       const result = await downloadLoop(
                         effectiveUrlRef.current!,
                         controller,
                         receivedRef.current
                       );
                       if (result === "done") {
-                        if (useFSApiRef.current && writableRef.current) {
-                          await writableRef.current.close();
-                          writableRef.current = null;
-                        }
-                        if (!useFSApiRef.current) {
-                          const blob = new Blob(chunksRef.current as BlobPart[], {
-                            type: "application/octet-stream",
-                          });
-                          const blobUrl = URL.createObjectURL(blob);
-                          setState((s) => ({
-                            ...s,
-                            phase: "done",
-                            finishedAt: Date.now(),
-                            blobUrl,
-                          }));
-                        } else {
-                          setState((s) => ({
-                            ...s,
-                            phase: "done",
-                            finishedAt: Date.now(),
-                            blobUrl: null,
-                          }));
-                        }
-                        toast.success("Download complete");
+                        const blobUrl = autoSaveBlob(state.filename);
+                        setState((s) => ({
+                          ...s,
+                          phase: "done",
+                          finishedAt: Date.now(),
+                          blobUrl,
+                        }));
+                        toast.success("Download complete — saved to your downloads");
                       }
                     } catch (e) {
                       setState((s) => ({
@@ -808,7 +748,7 @@ function PhasePill({ phase }: { phase: Phase }) {
     idle: { label: "Idle", icon: Loader2, cls: "text-muted-foreground" },
     fetching: { label: "Starting", icon: Loader2, cls: "text-primary" },
     downloading: { label: "Downloading", icon: Loader2, cls: "text-primary" },
-    done: { label: "Ready", icon: CheckCircle2, cls: "text-emerald-600 dark:text-emerald-400" },
+    done: { label: "Saved", icon: CheckCircle2, cls: "text-emerald-600 dark:text-emerald-400" },
     error: { label: "Failed", icon: Info, cls: "text-destructive" },
     aborted: { label: "Cancelled", icon: X, cls: "text-muted-foreground" },
   };

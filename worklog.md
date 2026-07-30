@@ -1705,3 +1705,151 @@ New refs for proper state tracking across pause/resume:
   - New refs for state tracking (`receivedRef`, `writableRef`, `fileHandleRef`, etc.)
   - Removed memory leak (chunks only stored in Blob fallback path)
   - Updated error/aborted messages to show byte offset and resume hint
+
+---
+
+## Phase H-9 — ukdevilz Extractor + No-File-Picker Download + Pause/Resume Fix (2025-07-30)
+
+**Agent**: Z.ai Code
+**Task ID**: H-9
+
+### Problems Fixed
+
+1. **ukdevilz video fetch returned 404 / wrong URLs** — The site
+   `ukdevilz.com/watch/{id1}_{id2}` had NO dedicated extractor, so the
+   generic scanner picked up:
+   - A FAKE placeholder URL `https://ukdevilz.com/videofile/{id}.mp4`
+     which returns HTTP 404 (the page uses it as a JW Player poster
+     fallback, not a real file).
+   - Related-video URLs from `cdn.pvvstream.pro` with DIFFERENT id
+     pairs (those are other videos, not the one requested).
+   The proxy kept returning 404 for the fake URL, so downloads always
+   failed.
+
+2. **Download showed a "file manager" (Save As) prompt** — The dialog
+   used `window.showSaveFilePicker()` which pops a native OS "Save As"
+   dialog. The user explicitly asked us to STOP showing that prompt:
+   they want click → download starts → progress on site → file saved
+   automatically.
+
+3. **Download "Cancelled" / "Failed" states** — In headless browsers
+   (and some real ones), `showSaveFilePicker` throws `AbortError`
+   immediately, landing the user on a "Cancelled" screen with zero
+   bytes downloaded. This was the root cause of the persistent
+   "cancelled" complaints.
+
+4. **Watch preview "Loading stream…" stuck** — already fixed in H-6
+   (HLS init segment), confirmed still working for ukdevilz MP4.
+
+### New Site Extractor: ukdevilz
+
+Added `extractUkdevilz(html, finalUrl)` in `src/lib/site-extractors.ts`:
+
+- Parses the JW Player setup JSON embedded in the page for `"file"`
+  entries pointing to `cdn.pvvstream.pro` / `cdn2.pvvstream.pro`.
+- Extracts the video id pair from the watch URL
+  (`/watch/-192485747_456239918` → `-192485747/456239918`).
+- **Filters to only the CURRENT video** — skips related-video URLs
+  (different id pairs) and the fake `/videofile/` placeholder (404).
+- Unescapes JSON `\u0026` → `&` in the URL.
+- Extracts quality from the filename (`vid_360p.mp4` → `360p`).
+- Sorts sources by quality descending (best first).
+- Sets `pageUrl` to the watch URL so the proxy sends the correct
+  referer (the CDN uses hotlink protection).
+
+Wired into the dispatch (`host.includes("ukdevilz")`) and added to
+`KNOWN_SITES` in `result-summary-card.tsx` so the "Site extractor ·
+ukdevilz" badge appears.
+
+### Download Dialog Rewrite — No File Picker
+
+Completely removed the File System Access API (`showSaveFilePicker`)
+from `src/components/download-progress-dialog.tsx`:
+
+- **Removed refs**: `writableRef`, `fileHandleRef`, `useFSApiRef`.
+- **Always uses in-memory Blob**: chunks accumulate in `chunksRef`
+  (Uint8Array array). On completion, a Blob is built and a hidden
+  `<a download>` element is programmatically clicked — the browser
+  saves the file to the user's default download folder with NO
+  "Save As" prompt.
+- **New `autoSaveBlob(filename)` helper**: creates the Blob, object
+  URL, hidden anchor, clicks it, then removes the anchor after 1s.
+  The object URL is revoked later via the existing `blobUrl` effect.
+- **"Saved to downloads"** confirmation replaces the old "Save file"
+  button. A "Save again" link is kept as a fallback in case the
+  auto-click was blocked by browser settings.
+- **PhasePill "done" label** changed from "Ready" → "Saved".
+- **Toast** changed to "Download complete — saved to your downloads".
+
+### Pause / Resume / Retry — All Use Blob
+
+- `downloadLoop` always pushes to `chunksRef` (no FS API branch).
+- On resume (206 Partial Content), the `Content-Length` is the
+  REMAINING bytes — added `(rangeFrom || 0)` so the total shown is
+  the full file size, not just the remaining portion.
+- `cancel()` simplified — just aborts the controller (no writable
+  to close).
+- `togglePause()` resume path calls `autoSaveBlob` on completion.
+- Error/aborted "Resume from X MB" button calls `autoSaveBlob` on
+  completion.
+- True pause still works: `reader.cancel()` releases the reader
+  before each `read()`, stopping bandwidth immediately. Verified
+  progress frozen at 11.9 MB for 3+ seconds while paused.
+
+### Verification (agent-browser)
+
+Tested the exact URL the user reported:
+`https://ukdevilz.com/watch/-192485747_456239918`
+
+1. **Fetch** — `POST /api/extract` → 200 in 1.0s.
+   - Title: "Sexy desi girl indian slut..."
+   - Thumbnail: `cdn2.pvvstream.pro/.../preview_800.jpg`
+   - Badge: "Site extractor · ukdevilz"
+   - 2 sources: MP4 360p (best) + MP4 240p — both REAL
+     `cdn.pvvstream.pro` URLs. NO fake `/videofile/` 404 URL.
+2. **Watch preview** — Clicked "Watch best". Video element loaded,
+   played past 3.54s (scrubber advanced, play→pause button flipped).
+   No "Loading stream…" stuck. Proxy returned 206 (Range) for the
+   video bytes.
+3. **Download (first attempt)** — Clicked "Download with progress".
+   Dialog opened, NO file picker prompt, progress ran to 100%,
+   "Saved" phase, 18.1 MB / 18.1 MB, "Done in 1.8 s", "Saved to
+   downloads" + "Save again" link. Toast: "Download complete —
+   saved to your downloads".
+4. **Download (second attempt, with pause)** — Clicked "Download"
+   (best). Dialog showed live progress: 29% → 57% → paused at 11.9
+   MB. Verified progress FROZE for 3 seconds while paused (true
+   pause, no bandwidth drain). Clicked "Resume" — continued from
+   11.9 MB, reached 100%, "Saved", 18.1 MB, "Done in 45.5 s".
+5. **Server log** — `POST /api/refresh` 200 (fresh token), then
+   `GET /api/proxy?...vid_360p.mp4...&download=1` 200. No 404s, no
+   502s, no errors.
+6. **Lint** — `bun run lint` → 0 errors / 0 warnings.
+
+### Files Modified
+
+- `src/lib/site-extractors.ts` — Added `extractUkdevilz` function
+  (~50 lines). Wired into dispatch after `porndr`.
+- `src/components/result-summary-card.tsx` — Added
+  `{ match: ["ukdevilz"], label: "ukdevilz" }` to KNOWN_SITES.
+- `src/components/download-progress-dialog.tsx` — Removed all
+  `showSaveFilePicker` / FS API code (refs, types, picker block,
+  writable write/close branches). Added `autoSaveBlob` helper.
+  Updated all three completion paths (initial, pause-resume,
+  error-retry) to call `autoSaveBlob`. Replaced "Save file" button
+  with "Saved to downloads" + "Save again" link. Changed PhasePill
+  "Ready" → "Saved". Fixed resume total calculation to add
+  `rangeFrom`.
+
+### Stage Summary
+
+The ukdevilz domain now extracts correctly (2 real MP4 sources
+instead of a 404 placeholder + unrelated video URLs). The download
+flow no longer shows a "Save As" file-manager prompt — clicking
+download starts the transfer immediately, shows live progress
+(percentage, bytes, speed, ETA), and auto-saves the file to the
+user's default downloads folder when complete. Pause truly stops
+bandwidth (verified frozen progress), and resume continues from
+the exact byte offset. All "Cancelled" / "Failed" states caused
+by the `showSaveFilePicker` AbortError are eliminated. Lint clean,
+no server errors, end-to-end verified with agent-browser.
