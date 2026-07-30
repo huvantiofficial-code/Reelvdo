@@ -382,8 +382,8 @@ export function DownloadProgressDialog({
         }, 200);
       }}
     >
-      <DialogContent className="max-w-md gap-0 overflow-hidden p-0 sm:rounded-lg">
-        <DialogHeader className="border-b border-border px-4 py-3">
+      <DialogContent className="flex max-h-[calc(100vh-1rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-md sm:max-h-[90vh] w-[calc(100vw-1rem)] max-w-[calc(100vw-1rem)] sm:w-full sm:rounded-lg">
+        <DialogHeader className="shrink-0 border-b border-border px-3 py-2.5 pr-10 sm:px-4 sm:py-3">
           <DialogTitle className="flex items-center gap-2 text-sm font-semibold">
             <Download className="h-4 w-4 text-primary" />
             Download
@@ -393,7 +393,7 @@ export function DownloadProgressDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4 px-4 py-4">
+        <div className="scroll-thin flex-1 space-y-4 overflow-y-auto px-4 py-4">
           {/* Filename + phase */}
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
@@ -498,7 +498,7 @@ export function DownloadProgressDialog({
         </div>
 
         {/* Action bar */}
-        <div className="flex items-center justify-end gap-2 border-t border-border bg-muted/30 px-4 py-3">
+        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-border bg-muted/30 px-4 py-3">
           {(state.phase === "downloading" || state.phase === "fetching") && (
             <>
               <Button

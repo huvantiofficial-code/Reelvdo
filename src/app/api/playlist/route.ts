@@ -54,8 +54,11 @@ function rewriteM3u8(text: string, base: string, page?: string | null): string {
         if (trimmed.startsWith("#EXT-X-STREAM-INF")) expectingVariant = true;
         else if (trimmed.startsWith("#EXTINF")) expectingSegment = true;
         if (trimmed.startsWith("#") && /URI=/.test(trimmed)) {
+          // #EXT-X-MAP:URI="..." (init segment) and #EXT-X-KEY:URI="..." (encryption key)
+          // are BINARY files, NOT playlists. Do NOT pass kind=m3u8 — let the route
+          // stream them as binary based on content-type sniffing.
           return trimmed.replace(/URI="([^"]+)"/g, (_m, uri: string) => {
-            return `URI="${proxied(uri, base, page, "m3u8")}"`;
+            return `URI="${proxied(uri, base, page)}"`;
           });
         }
         return line;

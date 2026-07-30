@@ -1215,28 +1215,18 @@ export default function Home() {
 
       {/* Footer */}
       <footer className="mt-auto border-t border-border/60 bg-background/95 backdrop-blur-xl">
-        <div aria-hidden className="h-px bg-gradient-to-r from-transparent via-primary/30 to-transparent" />
-        <div className="mx-auto flex w-full max-w-5xl flex-col items-center justify-between gap-4 px-4 py-5 sm:flex-row sm:px-6">
-          <div className="flex items-center gap-2.5">
-            <button
-              onClick={() => setAboutOpen(true)}
-              className="group flex items-center gap-2.5 btn-press"
-              aria-label="About Reel"
-            >
-              <span className="flex h-7 w-7 items-center justify-center rounded-md bg-gradient-to-br from-primary to-primary/80 text-primary-foreground shadow-sm shadow-primary/20 transition-shadow group-hover:shadow-md group-hover:shadow-primary/25 group-hover:scale-[1.05]">
-                <Clapperboard className="h-3.5 w-3.5" />
-              </span>
-              <div className="flex flex-col">
-                <span className="text-xs font-bold text-foreground">
-                  Reel
-                </span>
-                <span className="text-[10px] font-medium text-muted-foreground">
-                  Video fetch &amp; download tool
-                </span>
-              </div>
-            </button>
-          </div>
-          <div className="flex flex-wrap items-center justify-center gap-3">
+        <div className="mx-auto flex w-full max-w-5xl items-center justify-between gap-3 px-4 py-3 sm:px-6">
+          <button
+            onClick={() => setAboutOpen(true)}
+            className="group flex items-center gap-2 btn-press"
+            aria-label="About Reel"
+          >
+            <span className="flex h-6 w-6 items-center justify-center rounded-md bg-gradient-to-br from-primary to-primary/80 text-primary-foreground shadow-sm transition-shadow group-hover:shadow-md">
+              <Clapperboard className="h-3 w-3" />
+            </span>
+            <span className="text-xs font-bold text-foreground">Reel</span>
+          </button>
+          <div className="flex items-center gap-2">
             {stats && stats.totalFetches > 0 && (
               <StatsBadge
                 totalFetches={stats.totalFetches}
@@ -1245,20 +1235,7 @@ export default function Home() {
                 variant="footer"
               />
             )}
-            <span className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
-              <span className="animate-live-dot h-1.5 w-1.5 rounded-full bg-primary" />
-              For personal use · Respect copyright &amp; terms
-            </span>
-            <button
-              type="button"
-              onClick={() => setAboutOpen(true)}
-              className="rounded-md border border-border/50 bg-card/50 px-2 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-card hover:text-foreground btn-press"
-            >
-              About
-            </button>
-            <span className="rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-bold text-muted-foreground">
-              v2.3
-            </span>
+            <span className="text-[10px] font-medium text-muted-foreground">v2.3</span>
           </div>
         </div>
       </footer>

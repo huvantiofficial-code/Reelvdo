@@ -16,19 +16,10 @@ import {
   ResponsiveContainer,
   LabelList,
 } from "recharts";
-import {
-  Activity,
-  Layers,
-  CheckCircle2,
-  Clock,
-  Loader2,
-  BarChart3,
-  AlertTriangle,
-} from "lucide-react";
+import { Loader2, BarChart3, AlertTriangle } from "lucide-react";
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -74,7 +65,6 @@ interface InsightsDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
-/** Emerald palette - primary at descending opacities. Works in light + dark. */
 const PALETTE = [
   "var(--primary)",
   "color-mix(in oklch, var(--primary) 80%, transparent)",
@@ -83,39 +73,41 @@ const PALETTE = [
   "color-mix(in oklch, var(--primary) 20%, transparent)",
 ];
 
-/** Format a millisecond duration as a compact "1.2s" / "450ms" string. */
+const MAX_ERRORS = 3;
+
 function formatMs(ms: number): string {
   if (!ms || ms <= 0) return "-";
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-/** Format a number with thousands separators. */
 function formatNumber(n: number): string {
   return new Intl.NumberFormat("en-US").format(n);
 }
 
-/** Relative-time formatter ("just now", "5m ago", "3h ago", "2d ago"). */
 function relativeTime(iso: string): string {
   try {
     const then = new Date(iso).getTime();
     const diff = Date.now() - then;
-    if (diff < 60_000) return "just now";
-    if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
-    if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
-    return `${Math.floor(diff / 86_400_000)}d ago`;
+    if (diff < 60_000) return "now";
+    if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m`;
+    if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h`;
+    return `${Math.floor(diff / 86_400_000)}d`;
   } catch {
     return "-";
   }
 }
 
-/** Truncate a host string for axis labels. */
 function truncateHost(h: string, max = 22): string {
   if (h.length <= max) return h;
   return h.slice(0, max - 1) + "…";
 }
 
-/** Custom tooltip used by all charts - themed with CSS variables. */
+function truncateText(s: string, max = 60): string {
+  if (s.length <= max) return s;
+  return s.slice(0, max - 1) + "…";
+}
+
 function ChartTooltip({
   active,
   payload,
@@ -150,67 +142,40 @@ function ChartTooltip({
   );
 }
 
-/** One KPI stat card with icon, big number, and label. */
 function KpiCard({
-  icon: Icon,
   value,
   label,
-  hint,
 }: {
-  icon: React.ComponentType<{ className?: string }>;
   value: string;
   label: string;
-  hint?: string;
 }) {
   return (
-    <div className="relative flex flex-col gap-2 rounded-xl border border-border/70 bg-card/60 p-3.5 backdrop-blur-sm">
-      <div className="flex items-center justify-between">
-        <span className="flex h-7 w-7 items-center justify-center rounded-md bg-primary/10 text-primary">
-          <Icon className="h-3.5 w-3.5" />
-        </span>
-        {hint && (
-          <span className="text-[10px] font-medium text-muted-foreground/60">
-            {hint}
-          </span>
-        )}
-      </div>
-      <div>
-        <p className="text-xl font-bold tracking-tight text-foreground sm:text-2xl">
-          {value}
-        </p>
-        <p className="mt-0.5 text-[11px] font-medium text-muted-foreground">
-          {label}
-        </p>
-      </div>
+    <div className="flex flex-col gap-1 rounded-xl border border-border/70 bg-card/60 p-3">
+      <p className="text-lg font-bold tabular-nums tracking-tight text-foreground sm:text-xl">
+        {value}
+      </p>
+      <p className="text-[11px] text-muted-foreground">{label}</p>
     </div>
   );
 }
 
-/** Section wrapper for a single chart with a heading. */
 function ChartCard({
   title,
-  description,
   children,
   className,
 }: {
   title: string;
-  description?: string;
   children: React.ReactNode;
   className?: string;
 }) {
   return (
     <section
       className={cn(
-        "flex flex-col gap-2 rounded-xl border border-border/70 bg-card/40 p-4",
+        "flex flex-col gap-2 rounded-xl border border-border/70 bg-card/40 p-3.5",
         className
       )}
     >
-      <header className="flex items-baseline justify-between gap-2">
-        <h3 className="text-sm font-semibold text-foreground">{title}</h3>
-        {description && (
-          <p className="text-[11px] text-muted-foreground/80">{description}</p>
-        )}
-      </header>
+      <h3 className="text-xs font-semibold text-foreground">{title}</h3>
       {children}
     </section>
   );
@@ -232,7 +197,7 @@ export function InsightsDialog({ open, onOpenChange }: InsightsDialogProps) {
       const json = (await res.json()) as InsightsPayload;
       setData(json);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load insights");
+      setError(e instanceof Error ? e.message : "Failed to load");
       setData(null);
     } finally {
       setLoading(false);
@@ -246,97 +211,61 @@ export function InsightsDialog({ open, onOpenChange }: InsightsDialogProps) {
   }, [open, load]);
 
   const isEmpty = data && data.totalFetches === 0;
+  const recentErrors = (data?.recentErrors ?? []).slice(0, MAX_ERRORS);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[85vh] flex-col gap-4 overflow-hidden p-0 sm:max-w-4xl">
-        {/* Header */}
-        <DialogHeader className="border-b border-border/70 px-6 pb-4 pt-5">
-          <DialogTitle className="flex items-center gap-2 text-lg">
+      <DialogContent className="flex max-h-[calc(100vh-1rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl sm:max-h-[90vh] w-[calc(100vw-1rem)] max-w-[calc(100vw-1rem)] sm:w-full sm:rounded-xl">
+        <DialogHeader className="border-b border-border pr-10 px-5 py-4">
+          <DialogTitle className="flex items-center gap-2 text-base">
             <BarChart3 className="h-4 w-4 text-primary" />
             Insights
           </DialogTitle>
-          <DialogDescription className="text-xs">
-            Your fetch history at a glance
-          </DialogDescription>
         </DialogHeader>
 
-        {/* Body - scrollable */}
-        <div className="scroll-thin flex-1 overflow-y-auto px-6 pb-6">
+        <div className="scroll-thin flex-1 overflow-y-auto px-5 py-4">
           {loading && (
-            <div className="flex min-h-[260px] flex-col items-center justify-center gap-3 text-muted-foreground">
-              <Loader2 className="h-7 w-7 animate-spin text-primary" />
-              <p className="text-xs">Crunching your fetch history…</p>
+            <div className="flex min-h-[240px] flex-col items-center justify-center gap-3 text-muted-foreground">
+              <Loader2 className="h-6 w-6 animate-spin text-primary" />
+              <p className="text-xs">Loading…</p>
             </div>
           )}
 
           {!loading && error && (
-            <div className="flex min-h-[260px] flex-col items-center justify-center gap-3 text-center">
-              <AlertTriangle className="h-7 w-7 text-destructive" />
-              <p className="text-sm font-medium text-foreground">
-                Couldn&apos;t load insights
-              </p>
-              <p className="max-w-sm text-xs text-muted-foreground">{error}</p>
+            <div className="flex min-h-[240px] flex-col items-center justify-center gap-2 text-center">
+              <AlertTriangle className="h-6 w-6 text-destructive" />
+              <p className="text-sm font-medium text-foreground">Couldn&apos;t load</p>
+              <p className="max-w-xs text-xs text-muted-foreground">{error}</p>
             </div>
           )}
 
           {!loading && !error && isEmpty && (
-            <div className="flex min-h-[260px] flex-col items-center justify-center gap-3 text-center">
-              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
-                <BarChart3 className="h-5 w-5 text-muted-foreground" />
+            <div className="flex min-h-[240px] flex-col items-center justify-center gap-2 text-center">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-muted">
+                <BarChart3 className="h-4 w-4 text-muted-foreground" />
               </div>
               <p className="text-sm font-medium text-foreground">No data yet</p>
-              <p className="max-w-sm text-xs text-muted-foreground">
-                Fetch a few video URLs and come back here to see your activity
-                visualized.
+              <p className="max-w-xs text-xs text-muted-foreground">
+                Fetch a few URLs to see your activity.
               </p>
             </div>
           )}
 
           {!loading && !error && data && !isEmpty && (
             <div className="flex flex-col gap-4">
-              {/* KPI row */}
               <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-                <KpiCard
-                  icon={Activity}
-                  value={formatNumber(data.totalFetches)}
-                  label="Total fetches"
-                  hint="all-time"
-                />
-                <KpiCard
-                  icon={Layers}
-                  value={formatNumber(data.totalSources)}
-                  label="Total sources"
-                  hint="found"
-                />
-                <KpiCard
-                  icon={CheckCircle2}
-                  value={`${data.successRate}%`}
-                  label="Success rate"
-                  hint="ok / total"
-                />
-                <KpiCard
-                  icon={Clock}
-                  value={formatMs(data.avgTakeMs)}
-                  label="Avg extract time"
-                  hint="per fetch"
-                />
+                <KpiCard value={formatNumber(data.totalFetches)} label="Fetches" />
+                <KpiCard value={formatNumber(data.totalSources)} label="Sources" />
+                <KpiCard value={`${data.successRate}%`} label="Success" />
+                <KpiCard value={formatMs(data.avgTakeMs)} label="Avg time" />
               </div>
 
-              {/* Charts grid */}
               <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                {/* Hosts bar chart (horizontal) */}
-                <ChartCard
-                  title="Top hosts"
-                  description="by fetch count"
-                  className="lg:col-span-2"
-                >
+                <ChartCard title="Top hosts" className="lg:col-span-2">
                   {data.hostsBar.length === 0 ? (
-                    <p className="py-8 text-center text-xs text-muted-foreground/70">
-                      No host activity yet.
-                    </p>
+                    <p className="py-6 text-center text-xs text-muted-foreground/70">No hosts yet</p>
                   ) : (
-                    <div className="h-[280px] w-full">
+                    <div className="h-[260px] w-full">
                       <ResponsiveContainer width="100%" height="100%">
                         <BarChart
                           data={data.hostsBar}
@@ -385,14 +314,11 @@ export function InsightsDialog({ open, onOpenChange }: InsightsDialogProps) {
                   )}
                 </ChartCard>
 
-                {/* Format pie chart (donut) */}
-                <ChartCard title="Format mix" description="source types found">
+                <ChartCard title="Formats">
                   {data.typeBreakdown.length === 0 ? (
-                    <p className="py-8 text-center text-xs text-muted-foreground/70">
-                      No source items yet.
-                    </p>
+                    <p className="py-6 text-center text-xs text-muted-foreground/70">No sources yet</p>
                   ) : (
-                    <div className="h-[240px] w-full">
+                    <div className="h-[220px] w-full">
                       <ResponsiveContainer width="100%" height="100%">
                         <PieChart>
                           <Pie
@@ -401,8 +327,8 @@ export function InsightsDialog({ open, onOpenChange }: InsightsDialogProps) {
                             nameKey="type"
                             cx="50%"
                             cy="50%"
-                            innerRadius={48}
-                            outerRadius={78}
+                            innerRadius={44}
+                            outerRadius={72}
                             paddingAngle={2}
                             stroke="var(--background)"
                             strokeWidth={2}
@@ -417,7 +343,7 @@ export function InsightsDialog({ open, onOpenChange }: InsightsDialogProps) {
                           <Tooltip content={<ChartTooltip />} />
                         </PieChart>
                       </ResponsiveContainer>
-                      <ul className="mt-2 flex flex-wrap items-center justify-center gap-x-3 gap-y-1">
+                      <ul className="mt-1.5 flex flex-wrap items-center justify-center gap-x-3 gap-y-1">
                         {data.typeBreakdown.map((t, i) => (
                           <li
                             key={t.type}
@@ -443,17 +369,11 @@ export function InsightsDialog({ open, onOpenChange }: InsightsDialogProps) {
                   )}
                 </ChartCard>
 
-                {/* Quality bar chart (vertical) */}
-                <ChartCard
-                  title="Quality mix"
-                  description="top qualities found"
-                >
+                <ChartCard title="Qualities">
                   {data.qualityBreakdown.length === 0 ? (
-                    <p className="py-8 text-center text-xs text-muted-foreground/70">
-                      No quality data yet.
-                    </p>
+                    <p className="py-6 text-center text-xs text-muted-foreground/70">No quality data</p>
                   ) : (
-                    <div className="h-[240px] w-full">
+                    <div className="h-[220px] w-full">
                       <ResponsiveContainer width="100%" height="100%">
                         <BarChart
                           data={data.qualityBreakdown.slice(0, 8)}
@@ -495,18 +415,11 @@ export function InsightsDialog({ open, onOpenChange }: InsightsDialogProps) {
                   )}
                 </ChartCard>
 
-                {/* Timeline area chart */}
-                <ChartCard
-                  title="Activity timeline"
-                  description="last 14 days"
-                  className="lg:col-span-2"
-                >
+                <ChartCard title="Activity" className="lg:col-span-2">
                   {data.timeline.length === 0 ? (
-                    <p className="py-8 text-center text-xs text-muted-foreground/70">
-                      No recent activity.
-                    </p>
+                    <p className="py-6 text-center text-xs text-muted-foreground/70">No recent activity</p>
                   ) : (
-                    <div className="h-[240px] w-full">
+                    <div className="h-[220px] w-full">
                       <ResponsiveContainer width="100%" height="100%">
                         <AreaChart
                           data={data.timeline}
@@ -576,24 +489,19 @@ export function InsightsDialog({ open, onOpenChange }: InsightsDialogProps) {
                 </ChartCard>
               </div>
 
-              {/* Recent errors */}
-              <section className="rounded-xl border border-border/70 bg-card/40 p-4">
+              <section className="rounded-xl border border-border/70 bg-card/40 p-3.5">
                 <header className="mb-2 flex items-center gap-2">
                   <AlertTriangle className="h-3.5 w-3.5 text-destructive" />
-                  <h3 className="text-sm font-semibold text-foreground">
-                    Recent errors
-                  </h3>
+                  <h3 className="text-xs font-semibold text-foreground">Recent errors</h3>
                   <span className="ml-auto text-[11px] text-muted-foreground/70">
-                    last {data.recentErrors.length || 0}
+                    last {recentErrors.length}
                   </span>
                 </header>
-                {data.recentErrors.length === 0 ? (
-                  <p className="py-4 text-center text-xs text-muted-foreground/70">
-                    No errors recorded. Nice work!
-                  </p>
+                {recentErrors.length === 0 ? (
+                  <p className="py-3 text-center text-xs text-muted-foreground/70">None</p>
                 ) : (
                   <ul className="divide-y divide-border/60">
-                    {data.recentErrors.map((e, i) => (
+                    {recentErrors.map((e, i) => (
                       <li
                         key={i}
                         className="flex flex-col gap-0.5 py-2 sm:flex-row sm:items-center sm:gap-3"
@@ -602,7 +510,7 @@ export function InsightsDialog({ open, onOpenChange }: InsightsDialogProps) {
                           {e.host}
                         </span>
                         <span className="line-clamp-1 flex-1 text-xs text-muted-foreground">
-                          {e.error}
+                          {truncateText(e.error)}
                         </span>
                         <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground/60 sm:ml-auto">
                           {relativeTime(e.createdAt)}

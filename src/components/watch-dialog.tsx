@@ -54,31 +54,31 @@ export function WatchDialog({ source, open, onOpenChange, title, poster, onDownl
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-3xl gap-0 overflow-hidden p-0 sm:rounded-xl w-[calc(100vw-1rem)] max-w-[calc(100vw-1rem)] sm:w-full sm:max-w-3xl max-h-[calc(100vh-1rem)] sm:max-h-[90vh] flex flex-col">
-        <DialogHeader className="border-b border-border px-3 py-2.5 sm:px-4 sm:py-3 shrink-0">
-          <div className="flex items-start justify-between gap-2">
+        <DialogHeader className="border-b border-border px-3 py-2.5 sm:px-4 sm:py-3 shrink-0 pr-10">
+          <div className="flex items-start justify-between gap-2 min-w-0">
             <div className="min-w-0 flex-1">
               <DialogTitle className="truncate text-sm font-semibold">
                 {title || source.quality || "Preview"}
               </DialogTitle>
               <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
-                <span className="flex items-center gap-1">
-                  <Globe className="h-3 w-3" />
-                  {host}
+                <span className="flex items-center gap-1 min-w-0">
+                  <Globe className="h-3 w-3 shrink-0" />
+                  <span className="truncate">{host}</span>
                 </span>
-                <span className="text-muted-foreground/40">·</span>
-                <Badge variant="secondary" className="px-1.5 py-0 text-[10px] font-semibold">
+                <span className="text-muted-foreground/40 shrink-0">·</span>
+                <Badge variant="secondary" className="px-1.5 py-0 text-[10px] font-semibold shrink-0">
                   {source.type}
                 </Badge>
                 {source.quality && (
-                  <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-medium">
+                  <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-medium shrink-0">
                     {source.quality}
                   </Badge>
                 )}
                 {source.size && (
-                  <span className="rounded-md bg-muted px-1 py-0 text-[10px] text-muted-foreground/70">{source.size}</span>
+                  <span className="rounded-md bg-muted px-1 py-0 text-[10px] text-muted-foreground/70 shrink-0">{source.size}</span>
                 )}
                 {source.ext && (
-                  <span className="text-[10px] text-muted-foreground/60">.{source.ext}</span>
+                  <span className="text-[10px] text-muted-foreground/60 shrink-0">.{source.ext}</span>
                 )}
               </div>
             </div>

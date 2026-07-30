@@ -1298,3 +1298,164 @@ All cleanup tasks from Phase H-4 verified via grep:
 - ✅ All colors are deep green (primary) or destructive (errors only)
 - ✅ No AI-looking icons, no uppercase, no em-dashes, no keyboard shortcuts
 - ✅ Premium, clean, minimal UI
+
+---
+
+## Phase H-6 — Dialog Text + Design Simplification (2025-07-30)
+
+**Agent**: frontend-styling-expert (Task ID: DIALOG-CLEANUP-1)
+
+### Goal
+
+Reduce verbosity across all dialogs and ensure consistent mobile-responsive
+behavior (close-button overlap fix, mobile width/height constraints, scrollable
+content areas). Keep the deep-emerald primary palette, no AI-looking icons, no
+uppercase, no em-dashes.
+
+### 1. `src/components/about-dialog.tsx` (138 → 73 lines, -47%)
+
+Stripped to a minimal three-section layout:
+
+- **Header** — Logo + "Reel" + version badge only. Removed the verbose
+  tagline paragraph. Added `pr-10` to prevent the X close button overlapping
+  the title on mobile.
+- **Body** — One short sentence describing what Reel does, followed by a
+  compact bullet list of 4 highlights (multi-format, inline preview,
+  site extractors, batch). Removed the 6-card feature grid with verbose
+  descriptions, the "Built with" tech-stack badge cloud, and the
+  full-paragraph ethics notice.
+- **Footer** — Single line: "PWA · offline ready" + "Source" link.
+
+Mobile-responsive: `w-[calc(100vw-1rem)] max-w-[calc(100vw-1rem)] sm:w-full
+sm:max-w-lg`, `max-h-[calc(100vh-1rem)] sm:max-h-[90vh]`, `flex flex-col`
+with `flex-1 overflow-y-auto` on the body.
+
+### 2. `src/components/insights-dialog.tsx` (621 → 529 lines, -15%)
+
+Text simplification pass:
+
+- **KPI labels**: "Total fetches" → "Fetches", "Total sources" → "Sources",
+  "Success rate" → "Success", "Avg extract time" → "Avg time". Removed the
+  `hint` prop entirely (was showing "all-time", "found", "ok / total",
+  "per fetch").
+- **Chart titles**: "Top hosts" (kept), "Format mix" → "Formats",
+  "Quality mix" → "Qualities", "Activity timeline" → "Activity". Removed
+  the secondary `description` prop from every `ChartCard` (was showing
+  "by fetch count", "source types found", "top qualities found",
+  "last 14 days").
+- **Empty states**: "No host activity yet." → "No hosts yet"; "No source
+  items yet." → "No sources yet"; "No quality data yet." → "No quality
+  data"; "No recent activity." → "No recent activity". Removed the
+  descriptive empty-state paragraph ("Fetch a few video URLs and come back
+  here to see your activity visualized.") — replaced with the shorter
+  "Fetch a few URLs to see your activity."
+- **Loading state**: "Crunching your fetch history…" → "Loading…"
+- **Recent errors**: now capped to last 3 entries (was rendering the full
+  list). Added `truncateText()` helper that truncates error messages at 60
+  chars with ellipsis. Removed "Nice work!" exclamation in empty state —
+  now just "None". Relative-time formatter compressed ("just now" → "now",
+  "5m ago" → "5m", "3h ago" → "3h", "2d ago" → "2d").
+- Removed `DialogDescription` (was "Your fetch history at a glance").
+- Removed `Activity`, `Layers`, `CheckCircle2`, `Clock` icon imports from
+  lucide-react (KPI cards no longer render icons — they're just big numbers
+  + short label now).
+- Tightened `KpiCard` and `ChartCard` padding (`p-3.5`/`p-3` instead of
+  `p-3.5`/`p-4`), reduced chart heights from 280px/240px → 260px/220px.
+- Header: added `pr-10` and removed the bottom-of-header description.
+
+Mobile-responsive: same pattern as about dialog (`w-[calc(100vw-1rem)]
+max-w-[calc(100vw-1rem)] sm:w-full sm:max-w-4xl`, `max-h-[calc(100vh-1rem)]
+sm:max-h-[90vh]`, `flex flex-col`, `flex-1 overflow-y-auto` on the body).
+
+### 3. `src/components/settings-drawer.tsx` (198 → 157 lines, -21%)
+
+Reduced to three settings per the spec ("download mode, history limit, theme
+— that's it"):
+
+- Removed the "Auto-open preview" Row entirely (kept the `autoWatch` field
+  in `useSettings` for backward compat — page.tsx still uses it).
+- Removed the "Best badge" Row entirely (kept the `showBestBadge` field in
+  `useSettings` for backward compat — page.tsx still uses it).
+- Removed the `Row` helper component + the `Switch` import (no longer needed).
+- Removed `SheetDescription` ("Preferences are stored locally in your
+  browser.") — header is just the title now.
+- Added a new **Theme** selector with three icon+label buttons: Light (Sun),
+  Dark (Moon), Auto (Monitor). Wired to `next-themes`'s `useTheme()`.
+- Download-mode buttons simplified: removed the per-option descriptive
+  subtitle ("Show a dialog with speed & ETA" / "Start the browser
+  download"); now just "Progress" / "Direct" + a Check icon when active.
+- History-limit row: moved the numeric value to the right of the label
+  (single row) instead of below; removed the verbose "Number of recent
+  fetches shown in the panel (5-100)." description.
+- Reset button label: "Reset to defaults" → "Reset".
+- SheetHeader: added `pr-10` to prevent X overlap on mobile.
+- SheetContent: changed from `w-full overflow-y-auto p-0 sm:max-w-sm` to
+  `flex w-full flex-col overflow-hidden p-0 sm:max-w-sm` so the body
+  scrolls independently inside the fixed header/footer.
+
+### 4. `src/components/download-progress-dialog.tsx` (responsive pass)
+
+Although not in the original 3-file scope, this dialog was missing the
+mobile-width and max-height constraints called for in the "for ALL dialogs"
+section of the spec:
+
+- DialogContent: `max-w-md gap-0 overflow-hidden p-0 sm:rounded-lg` →
+  `flex max-h-[calc(100vh-1rem)] flex-col gap-0 overflow-hidden p-0
+  sm:max-w-md sm:max-h-[90vh] w-[calc(100vw-1rem)] max-w-[calc(100vw-1rem)]
+  sm:w-full sm:rounded-lg`
+- DialogHeader: added `shrink-0` so it doesn't compress when content
+  overflows. (`pr-10` was already present.)
+- Body div: `space-y-4 px-4 py-4` → `scroll-thin flex-1 space-y-4
+  overflow-y-auto px-4 py-4`
+- Action bar div: added `shrink-0` so buttons stay pinned at the bottom.
+
+The `watch-dialog.tsx` and `history-panel.tsx` (alert-dialog confirmations)
+were verified to already have proper mobile sizing and `pr-10` (watch) or
+no close button (alerts), so no changes were needed.
+
+### Verification
+
+- ✅ `bun run lint` — **0 errors / 0 warnings** (exit code 0, run twice).
+- ✅ No remaining `Sparkles`/`ShieldAlert`/`Zap`/`Magic`/`Thunder`/`Flash`/
+  `AlertCircle`/`ShieldCheck` icons in the 4 modified files.
+- ✅ No remaining `—` or `–` characters in the 4 modified files.
+- ✅ No remaining `uppercase`/`tracking-wide`/`tracking-wider`/
+  `tracking-widest` classes in the 4 modified files.
+- ✅ No remaining `text-amber`/`text-sky`/`text-violet`/`text-rose`/
+  `text-cyan`/`text-orange` (or `bg-*`/`from-*`/`to-*`/`ring-*` variants)
+  in the 4 modified files — only `text-primary` (emerald) and
+  `text-destructive` (errors).
+- ✅ All four dialogs use the same mobile-responsive pattern:
+  `w-[calc(100vw-1rem)] max-w-[calc(100vw-1rem)] sm:w-full sm:max-w-{size}`
+  + `max-h-[calc(100vh-1rem)] sm:max-h-[90vh]` + `flex flex-col` +
+  `overflow-y-auto` on the scrollable body.
+- ✅ All dialog headers (Sheet + Dialog) carry `pr-10` to prevent the
+  absolute-positioned X close button from overlapping the title text on
+  narrow mobile viewports.
+
+### Files Modified
+
+- `src/components/about-dialog.tsx` — Rewrote as minimal 3-section dialog
+  (header + bullet list + footer). Removed feature grid, tech-stack cloud,
+  ethics paragraph, decorative gradient bar. ~47% line reduction.
+- `src/components/insights-dialog.tsx` — Compressed KPI labels, chart
+  titles, empty-state copy, loading text, relative-time formatter. Capped
+  recent errors at last 3 with truncated messages. Removed unused icon
+  imports. ~15% line reduction.
+- `src/components/settings-drawer.tsx` — Reduced to 3 settings (download
+  mode, history limit, theme). Added theme selector wired to next-themes.
+  Removed Row helper, Switch import, SheetDescription, and verbose setting
+  descriptions. ~21% line reduction.
+- `src/components/download-progress-dialog.tsx` — Mobile-responsive pass:
+  added width/height constraints, `flex flex-col`, scrollable body,
+  `shrink-0` on header + action bar.
+
+### Stage Summary
+
+All four dialogs are now visually consistent (mobile-first responsive
+pattern with `pr-10` headers), use only emerald + destructive colors, and
+have had their text trimmed to the essentials. The About dialog is now a
+quick-glance card, the Insights dialog shows the same charts with shorter
+labels, the Settings drawer exposes just three core preferences, and the
+Download progress dialog fits cleanly inside a mobile viewport. Lint is
+clean (0 errors, 0 warnings).
