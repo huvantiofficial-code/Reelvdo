@@ -1154,7 +1154,7 @@ export default function Home() {
                 finalUrl={result.finalUrl}
                 bestSource={bestSource}
                 onWatchBest={bestSource ? () => openWatch(bestSource) : undefined}
-                onDownloadBest={bestDownloadSource && settings.downloadMode === "progress" ? () => openDownload(bestDownloadSource) : undefined}
+                onDownloadBest={bestDownloadSource ? () => openDownload(bestDownloadSource) : undefined}
               />
             )}
 
@@ -1182,11 +1182,7 @@ export default function Home() {
                           source={s}
                           index={i}
                           onWatch={() => openWatch(s)}
-                          onDownloadProgress={
-                            settings.downloadMode === "progress"
-                              ? () => openDownload(s)
-                              : undefined
-                          }
+                          onDownloadProgress={() => openDownload(s)}
                           poster={poster}
                           isBest={
                             settings.showBestBadge &&

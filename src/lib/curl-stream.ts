@@ -65,7 +65,7 @@ async function fetchStreamFallback(
   if (opts.range) headers["range"] = opts.range;
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 280000);
+  const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 1100000);
 
   try {
     const resp = await fetch(url, {
@@ -104,7 +104,7 @@ function curlStreamViaCurl(
   url: string,
   opts: StreamOpts = {}
 ): Promise<StreamResult> {
-  const timeoutMs = opts.timeoutMs ?? 280000;
+  const timeoutMs = opts.timeoutMs ?? 1100000; // ~18 min default for large files
   const args: string[] = [
     "-sS", "-L", "--compressed", "-4",
     "--max-time", String(Math.ceil(timeoutMs / 1000)),

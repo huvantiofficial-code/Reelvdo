@@ -252,6 +252,77 @@ export function DownloadProgressDialog({
           throw new Error("No response body; use direct download");
         }
 
+        // Use the File System Access API when available (Chrome/Edge).
+        // This streams directly to disk without storing the file in memory,
+        // avoiding the 50-60MB crash that happens when storing chunks in RAM.
+        // The writable stream is piped from the fetch response stream.
+        type FileSystemFileHandleLike = {
+          createWritable: () => Promise<{
+            write: (data: Uint8Array | Blob) => Promise<void>;
+            close: () => Promise<void>;
+          }>;
+        };
+        type ShowSaveFilePickerFn = (opts: {
+          suggestedName?: string;
+        }) => Promise<FileSystemFileHandleLike>;
+
+        const _window = window as typeof window & {
+          showSaveFilePicker?: ShowSaveFilePickerFn;
+        };
+
+        if (typeof _window.showSaveFilePicker === "function") {
+          // File System Access API is available — stream directly to disk.
+          try {
+            const handle = await _window.showSaveFilePicker({
+              suggestedName: filename,
+            });
+            const writable = await handle.createWritable();
+            const reader = res.body.getReader();
+            let received = 0;
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              if (value) {
+                await writable.write(value);
+                received += value.byteLength;
+                if (pauseRef.current) {
+                  pendingRef.current += value.byteLength;
+                } else {
+                  const flush = pendingRef.current;
+                  pendingRef.current = 0;
+                  setState((s) => ({
+                    ...s,
+                    received: s.received + value.byteLength + flush,
+                  }));
+                }
+              }
+            }
+            if (pendingRef.current > 0) {
+              const flush = pendingRef.current;
+              pendingRef.current = 0;
+              setState((s) => ({ ...s, received: s.received + flush }));
+            }
+            await writable.close();
+            setState((s) => ({
+              ...s,
+              phase: "done",
+              finishedAt: Date.now(),
+              blobUrl: null, // No blob — file was saved directly to disk
+            }));
+            toast.success("Download complete");
+            return;
+          } catch (e) {
+            // User cancelled the save dialog or FS API failed.
+            if ((e as Error).name === "AbortError") {
+              setState((s) => ({ ...s, phase: "aborted", finishedAt: Date.now() }));
+              return;
+            }
+            // Fall through to the in-memory blob approach below.
+          }
+        }
+
+        // Fallback: stream into memory (Blob). This works in Firefox/Safari
+        // but may fail for very large files (>200MB) due to memory limits.
         const reader = res.body.getReader();
         const chunks: Uint8Array[] = [];
         let received = 0;
@@ -401,7 +472,7 @@ export function DownloadProgressDialog({
                 {state.filename}
               </p>
               <p className="mt-0.5 text-xs text-muted-foreground">
-                {source.type.toUpperCase()}
+                {source.type}
                 {source.quality ? ` · ${source.quality}` : ""}
               </p>
             </div>
@@ -410,6 +481,19 @@ export function DownloadProgressDialog({
 
           {/* Progress bar */}
           <div className="space-y-2">
+            {/* Large percentage display */}
+            {state.phase === "downloading" && (
+              <div className="flex items-baseline justify-between">
+                <span className="text-2xl font-bold tabular-nums text-foreground">
+                  {pct}%
+                </span>
+                {state.total && state.received > 0 && (
+                  <span className="text-xs tabular-nums text-muted-foreground">
+                    {formatBytes(state.received)} / {formatBytes(state.total)}
+                  </span>
+                )}
+              </div>
+            )}
             <div
               role="progressbar"
               aria-valuenow={pct}
@@ -539,6 +623,13 @@ export function DownloadProgressDialog({
                 Save file
               </a>
             </Button>
+          )}
+
+          {state.phase === "done" && !state.blobUrl && (
+            <div className="flex items-center gap-1.5 text-xs font-medium text-primary">
+              <CheckCircle2 className="h-3.5 w-3.5" />
+              Saved to disk
+            </div>
           )}
 
           {(state.phase === "error" || state.phase === "aborted") && (

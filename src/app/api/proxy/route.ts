@@ -4,7 +4,7 @@ import { refreshSourceUrl } from "@/lib/refresh";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 300;
+export const maxDuration = 1200; // 20 minutes — large video files need time
 
 function corsHeaders(): Record<string, string> {
   return {

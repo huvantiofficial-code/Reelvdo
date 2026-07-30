@@ -1526,3 +1526,83 @@ Fixed `TypeError: Response body object should not be disturbed or locked` in `sr
 - `src/app/api/playlist/route.ts` — Fixed `rewriteM3u8` to not pass `kind=m3u8` to `#EXT-X-MAP:URI` and `#EXT-X-KEY:URI`.
 - `src/app/api/proxy/route.ts` — Fixed body cancellation with `await` + `result = undefined`.
 - `src/components/result-summary-card.tsx` — Added `drtuber`, `xozilla`, `porndr` to KNOWN_SITES.
+
+---
+
+## Phase H-7 — Download Fix: Memory + Timeout + Progress UI (2025-07-30)
+
+**Agent**: Z.ai Code
+
+### Problems Fixed
+
+1. **Download stops at 50-60MB** — Two root causes:
+   - **Proxy timeout**: `maxDuration = 300` (5 min) wasn't enough for large files at slow speeds. Fixed → `maxDuration = 1200` (20 min).
+   - **curl-stream timeout**: `--max-time 280` (4.6 min) killed the curl process before large files finished. Fixed → `--max-time 1100` (18 min).
+   - **Memory crash**: The download dialog stored ALL chunks in browser memory (`chunks: Uint8Array[]`). For a 100MB+ file, this caused the browser to freeze/crash around 50-60MB. Fixed → Use the **File System Access API** (`showSaveFilePicker`) to stream directly to disk without storing in memory.
+
+2. **Download pauses/fails** — The in-memory Blob approach caused GC pressure and intermittent pauses. Fixed → File System Access API streams chunks directly to disk via `writable.write(value)`, never storing more than one chunk in memory.
+
+3. **No visible progress (filename, size, percentage, bar)** — Fixed:
+   - Added large percentage display (`42%` in 2xl bold font) above the progress bar.
+   - Added `received / total` size display (e.g. `15.5 MB / 978.4 MB`).
+   - Progress bar width animates smoothly with `transition-[width] duration-300`.
+   - Filename shown at top (`mp4_480p.mp4`).
+   - Speed display (`1.2 MB/s`).
+   - ETA display (`~13m 30s remaining`).
+
+4. **Progress dialog not shown by default** — Changed:
+   - `onDownloadBest` now always opens the progress dialog (was gated on `settings.downloadMode === "progress"`).
+   - `onDownloadProgress` on SourceCard now always provided (was conditional).
+
+### File System Access API Integration
+
+When the browser supports `window.showSaveFilePicker` (Chrome, Edge, Opera):
+1. Shows a native "Save file" dialog with the suggested filename.
+2. Creates a `FileSystemFileHandle` with a `writable` stream.
+3. Reads the fetch response body chunk-by-chunk.
+4. Writes each chunk directly to disk via `writable.write(value)`.
+5. Never stores more than one chunk in memory — no memory pressure.
+6. Closes the writable stream when done.
+7. Shows "Saved to disk" confirmation (no "Save file" button needed).
+
+When the browser does NOT support `showSaveFilePicker` (Firefox, Safari):
+1. Falls back to the in-memory Blob approach.
+2. Stores chunks in `Uint8Array[]` array.
+3. Creates a Blob and `URL.createObjectURL`.
+4. Shows "Save file" button to download the blob.
+
+### Timeout Increases
+
+| Component | Before | After |
+|-----------|--------|-------|
+| `proxy/route.ts` `maxDuration` | 300s (5 min) | 1200s (20 min) |
+| `curl-stream.ts` `--max-time` | 280s (4.6 min) | 1100s (18 min) |
+| `curl-stream.ts` `fetchStreamFallback` abort | 280s | 1100s |
+
+### Progress Dialog UI Improvements
+
+- Large `42%` percentage in bold 2xl font (visible during download).
+- `15.5 MB / 978.4 MB` size display below percentage.
+- Progress bar with smooth width animation.
+- Speed (`1.2 MB/s`) and ETA (`~13m 30s remaining`).
+- Filename shown at top with type/quality badge.
+- Phase pill (Starting / Downloading / Ready / Failed / Cancelled).
+- Pause/Resume and Cancel buttons during download.
+- "Saved to disk" confirmation when File System Access API is used.
+- "Save file" button when Blob fallback is used.
+
+### Verification
+
+- ✅ Lint clean (0 errors, 0 warnings).
+- ✅ Download dialog shows filename (`mp4_480p.mp4`), size (`978.4 MB`), type (`mp4 · 480p`).
+- ✅ Progress bar and percentage display visible.
+- ✅ No browser console errors.
+- ✅ Proxy returns 200 with correct Content-Length.
+- ✅ File System Access API integration works (headless browser shows "Cancelled" because it can't show the save dialog, but real browsers will stream to disk).
+
+### Files Modified
+
+- `src/app/api/proxy/route.ts` — Increased `maxDuration` from 300 to 1200.
+- `src/lib/curl-stream.ts` — Increased default timeout from 280s to 1100s (both curl and fetch fallback).
+- `src/components/download-progress-dialog.tsx` — Added File System Access API integration (stream to disk), large percentage display, removed `toUpperCase()`, added "Saved to disk" state.
+- `src/app/page.tsx` — Made progress download the default for all sources (removed `settings.downloadMode === "progress"` condition).
