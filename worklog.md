@@ -1017,3 +1017,85 @@ Also updated:
 ### Stage Summary
 
 Eporner extraction is now **fully working** — returns 3 real playable MP4 sources (480p/360p/240p) from the XHR API. The video plays inline in the watch dialog and downloads with real progress tracking. The key insight was reverse-engineering the `vjs851.js` player script to find the XHR endpoint and hash transformation algorithm.
+
+---
+
+## Phase H-4 — UI Cleanup: Reduce Text & Fix Mobile Overflow (2025-07-30)
+
+**Agent**: Z.ai Code
+**Scope**: Remove the "HLS · DASH · MP4 · TS — all in one place" badge, reduce verbose text throughout, fix button overflow/overlap on mobile devices.
+
+### Changes
+
+#### Hero section (`src/app/page.tsx`)
+- **Removed** the "HLS · DASH · MP4 · TS — all in one place" capsule badge entirely.
+- **Shortened** hero subtitle from "Paste a page or stream URL. Watch inline, copy direct links, or download — no ads, no redirects." → "Paste a URL — watch, copy, or download."
+- Reduced top margin from `mt-4` to `mt-3`.
+
+#### URL input bar (`src/app/page.tsx`)
+- **Reduced** input right padding from `pr-24` to `pr-20` to give more text space.
+- **Hidden** the "Share this URL" and "Add to favorites" buttons on mobile (`hidden sm:inline-flex`) — they were causing overlap with the Fetch button on narrow screens.
+- **Hidden** the divider on mobile (`hidden sm:block`).
+
+#### URL security line (`src/app/page.tsx`)
+- Shortened "Secure HTTPS connection to {host}" → "HTTPS · {host}".
+- Shortened "Unencrypted HTTP — some sites may block extraction" → "HTTP · may be blocked".
+- Shortened "Share this link" → "Share".
+
+#### Batch hint (`src/app/page.tsx`)
+- Shortened "Batch mode: N URLs detected — all will be fetched in parallel" → "Batch: N URLs".
+- Shortened "Tip: paste multiple URLs (space or comma separated) for batch mode · or share a link with ?url= param" → "Paste multiple URLs for batch mode".
+
+#### Loading state (`src/app/page.tsx`)
+- Shortened "Extracting video sources…" → "Extracting…".
+- Shortened "Scanning page content, analyzing scripts & embeds" → "Scanning page & embeds".
+
+#### No-results state (`src/app/page.tsx`)
+- Shortened "This page may use a protected embed or require a browser session." → "This page may use a protected embed."
+- Shortened "Tip: Direct video URLs (.mp4, .m3u8) work best. Some streaming sites require browser access." → "Direct video URLs (.mp4, .m3u8) work best."
+
+#### Keyboard hint (`src/app/page.tsx`)
+- Shortened "Hold Alt for number overlays · 1–9 watch · d download · e export · s share" → "Hold Alt for numbers · 1–9 watch · d download" (removed export/share hints that were redundant).
+
+#### Source card buttons (`src/components/source-card.tsx`)
+- **Mobile (< 640px)**: Only show essential buttons — Watch (icon only), Download (icon only), Copy link (icon). Hidden: Favorite, Copy embed code, Open source in new tab, divider.
+- **Desktop (≥ 640px)**: Show all buttons with text labels — Watch, Download, Favorite, Copy embed code, Open source, Copy link.
+- Reduced button gap on mobile from `gap-1` to `gap-0.5`.
+- Reduced button padding on mobile (`px-2 sm:px-3`) for Download buttons.
+- Hidden "Watch"/"Download" text labels on mobile (icon-only).
+
+#### Watch dialog action bar (`src/components/watch-dialog.tsx`)
+- "Download with progress" → "Download" on mobile (text hidden, icon only).
+- "Open source" → "Open" on mobile.
+- "Copy link" text hidden on mobile (icon only).
+- All buttons use `flex-wrap` so they wrap to next line on narrow screens.
+
+### Verification (agent-browser)
+
+**Mobile (390×844 — iPhone 12 Pro size):**
+- ✅ Home page: hero badge removed, subtitle shortened, no overlap.
+- ✅ URL input: Clear + Fetch buttons visible, no overlap with favicon.
+- ✅ Results: each source card shows Watch (icon) + Download + Copy link — fits in one row, no overflow.
+- ✅ Watch dialog: video player + Download + Open + Copy + Show link + Close — all fit with flex-wrap.
+- ✅ No horizontal scrolling.
+
+**Desktop (1280×800):**
+- ✅ Home page: clean hero, full subtitle.
+- ✅ URL input: all buttons visible (Share, Favorite, Fetch) with proper spacing.
+- ✅ Results: each source card shows full button set (Watch, Download, Favorite, Copy embed, Open source, Copy link).
+- ✅ Watch dialog: full button labels visible.
+
+**Both:**
+- ✅ Lint clean (0 errors, 0 warnings).
+- ✅ No browser console errors.
+- ✅ No layout warnings.
+
+### Files Modified
+
+- `src/app/page.tsx` — Removed hero badge, shortened 7 text strings, hidden 2 buttons on mobile.
+- `src/components/source-card.tsx` — Hidden 4 buttons on mobile, reduced gaps/padding, made text labels responsive.
+- `src/components/watch-dialog.tsx` — Made 3 button labels responsive (hidden on mobile).
+
+### Stage Summary
+
+The UI is now cleaner and more mobile-friendly. The confusing "HLS · DASH · MP4 · TS — all in one place" badge is gone. All verbose text has been reduced to essentials. On mobile, only the core action buttons (Watch, Download, Copy) are shown per source card — preventing overflow/overlap. On desktop, the full button set is available. The watch dialog action bar wraps gracefully on narrow screens.

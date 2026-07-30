@@ -776,19 +776,14 @@ export default function Home() {
 
           {/* Hero */}
           <section className="animate-fade-up flex flex-col items-center text-center">
-            <div className="animate-scale-in animate-capsule-glow mb-5 inline-flex items-center gap-1.5 rounded-full border border-primary/25 bg-primary/5 px-3.5 py-1.5 text-[11px] font-semibold text-primary backdrop-blur-sm">
-              <Sparkles className="h-3 w-3 animate-dot-pulse text-primary" />
-              HLS · DASH · MP4 · TS — all in one place
-            </div>
             <h1 className="text-balance text-3xl font-bold tracking-tight text-foreground sm:text-4xl lg:text-[2.75rem] leading-[1.05]">
               Fetch video from{" "}
               <span className="animate-gradient-text bg-gradient-to-r from-primary via-primary/80 to-primary/50 bg-clip-text text-transparent">
                 any link
               </span>
             </h1>
-            <p className="mt-4 max-w-md text-pretty text-sm font-medium text-muted-foreground sm:text-base">
-              Paste a page or stream URL. Watch inline, copy direct links, or
-              download — no ads, no redirects.
+            <p className="mt-3 max-w-md text-pretty text-sm font-medium text-muted-foreground sm:text-base">
+              Paste a URL — watch, copy, or download.
             </p>
 
             {/* Search bar — drag-drop zone */}
@@ -858,7 +853,7 @@ export default function Home() {
                   value={url}
                   onChange={(e) => setUrl(e.target.value)}
                   className={cn(
-                    "url-input-focus h-12 rounded-lg border-border/80 bg-card pr-24 pl-3 text-sm font-medium shadow-sm placeholder:text-muted-foreground/70",
+                    "url-input-focus h-12 rounded-lg border-border/80 bg-card pr-20 pl-3 text-sm font-medium shadow-sm placeholder:text-muted-foreground/70",
                     urlHost && urlValid && "pl-10"
                   )}
                 />
@@ -911,7 +906,7 @@ export default function Home() {
                     </TooltipProvider>
                   )}
                   {/* Divider */}
-                  <span aria-hidden className="mx-0.5 h-5 w-px bg-border/70" />
+                  <span aria-hidden className="mx-0.5 h-5 w-px bg-border/70 hidden sm:block" />
                   {/* Share URL button */}
                   {urlValid && !loading && (
                     <TooltipProvider delayDuration={300}>
@@ -923,7 +918,7 @@ export default function Home() {
                             variant="ghost"
                             aria-label="Share this URL"
                             onClick={copyShareUrl}
-                            className="h-9 w-9 text-muted-foreground/50 hover:text-primary btn-press"
+                            className="hidden h-9 w-9 text-muted-foreground/50 hover:text-primary btn-press sm:inline-flex"
                           >
                             <Share2 className="h-3.5 w-3.5" />
                           </Button>
@@ -943,7 +938,7 @@ export default function Home() {
                             variant="ghost"
                             aria-label={favorites.has(url.trim()) ? "Remove from favorites" : "Add to favorites"}
                             onClick={() => toggleFavorite(url.trim())}
-                            className={cn("h-9 w-9 btn-press", favorites.has(url.trim()) ? "text-primary" : "text-muted-foreground/50 hover:text-primary")}
+                            className={cn("hidden h-9 w-9 btn-press sm:inline-flex", favorites.has(url.trim()) ? "text-primary" : "text-muted-foreground/50 hover:text-primary")}
                           >
                             {favorites.has(url.trim()) ? (
                               <Star className="h-4 w-4 fill-primary" />
@@ -979,12 +974,12 @@ export default function Home() {
                   {urlProtocol === "https" ? (
                     <span className="flex items-center gap-1 font-medium text-emerald-600 dark:text-emerald-400">
                       <Lock className="h-3 w-3" />
-                      Secure HTTPS connection to {urlHost}
+                      HTTPS · {urlHost}
                     </span>
                   ) : (
                     <span className="flex items-center gap-1 font-medium text-amber-600 dark:text-amber-400">
                       <AlertCircle className="h-3 w-3" />
-                      Unencrypted HTTP — some sites may block extraction
+                      HTTP · may be blocked
                     </span>
                   )}
                   <span className="text-muted-foreground/40">·</span>
@@ -994,7 +989,7 @@ export default function Home() {
                     className="flex items-center gap-1 font-medium text-primary/70 hover:text-primary btn-press"
                   >
                     <Share2 className="h-3 w-3" />
-                    Share this link
+                    Share
                   </button>
                 </div>
               )}
@@ -1003,14 +998,14 @@ export default function Home() {
                 <div className="animate-scale-in mt-2 flex items-center justify-center gap-1.5">
                   <ListTree className="h-3.5 w-3.5 text-primary" />
                   <span className="text-[11px] font-medium text-primary">
-                    Batch mode: {detectedUrls.length} URLs detected — all will be fetched in parallel
+                    Batch: {detectedUrls.length} URLs
                   </span>
                 </div>
               )}
               {/* Batch hint — only when input empty & no results */}
               {!url && !hasResults && !loading && (
                 <p className="mt-2 text-center text-[10px] text-muted-foreground/60">
-                  Tip: paste multiple URLs (space or comma separated) for batch mode · or share a link with <kbd className="rounded border border-border bg-muted px-0.5 py-0 font-mono text-[9px] font-bold text-foreground/70">?url=</kbd> param
+                  Paste multiple URLs for batch mode
                 </p>
               )}
 
@@ -1194,10 +1189,10 @@ export default function Home() {
                 </div>
                 <div className="text-center">
                   <p className="text-sm font-semibold text-foreground">
-                    Extracting video sources…
+                    Extracting…
                   </p>
                   <p className="mt-1 text-xs text-muted-foreground animate-float">
-                    Scanning page content, analyzing scripts &amp; embeds
+                    Scanning page &amp; embeds
                   </p>
                 </div>
                 {/* Skeleton previews */}
@@ -1222,8 +1217,7 @@ export default function Home() {
                   No video found
                 </p>
                 <p className="mt-2 max-w-md text-sm text-muted-foreground leading-relaxed">
-                  {result.error ||
-                    "This page may use a protected embed or require a browser session."}
+                  {result.error || "This page may use a protected embed."}
                 </p>
                 {/* Suggestion pills */}
                 <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
@@ -1251,9 +1245,7 @@ export default function Home() {
                 {/* Helpful tips */}
                 <div className="mt-5 flex items-center gap-2 text-[11px] text-muted-foreground/60">
                   <Sparkles className="h-3 w-3 text-primary/40 animate-float" />
-                  <span>
-                    Tip: Direct video URLs (.mp4, .m3u8) work best. Some streaming sites require browser access.
-                  </span>
+                  <span>Direct video URLs (.mp4, .m3u8) work best.</span>
                 </div>
               </div>
             )}
@@ -1275,11 +1267,9 @@ export default function Home() {
               <div className="mt-3 flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-[10px] text-muted-foreground/70">
                 <Keyboard className="h-3 w-3" />
                 <span>
-                  Hold <kbd className="rounded border border-border bg-muted px-1 py-px font-mono text-[9px] font-bold text-foreground/70">Alt</kbd> for number overlays ·
+                  Hold <kbd className="rounded border border-border bg-muted px-1 py-px font-mono text-[9px] font-bold text-foreground/70">Alt</kbd> for numbers ·
                   <kbd className="rounded border border-border bg-muted px-1 py-px font-mono text-[9px] font-bold text-foreground/70">1</kbd>–<kbd className="rounded border border-border bg-muted px-1 py-px font-mono text-[9px] font-bold text-foreground/70">9</kbd> watch ·
-                  <kbd className="rounded border border-border bg-muted px-1 py-px font-mono text-[9px] font-bold text-foreground/70">d</kbd> download ·
-                  <kbd className="rounded border border-border bg-muted px-1 py-px font-mono text-[9px] font-bold text-foreground/70">e</kbd> export ·
-                  <kbd className="rounded border border-border bg-muted px-1 py-px font-mono text-[9px] font-bold text-foreground/70">s</kbd> share
+                  <kbd className="rounded border border-border bg-muted px-1 py-px font-mono text-[9px] font-bold text-foreground/70">d</kbd> download
                 </span>
               </div>
             )}

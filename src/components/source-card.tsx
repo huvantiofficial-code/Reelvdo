@@ -344,7 +344,7 @@ export function SourceCard({ source, index, onWatch, onDownloadProgress, poster,
         </div>
       </div>
 
-      <div className="flex shrink-0 items-center gap-1">
+      <div className="flex shrink-0 items-center gap-0.5 sm:gap-1">
         {isCaptchaIframe ? (
           // For captcha-protected iframe pages, render a single
           // prominent "Open page" button that opens the URL in a new tab.
@@ -380,13 +380,13 @@ export function SourceCard({ source, index, onWatch, onDownloadProgress, poster,
               className="gap-1.5 btn-press shadow-sm"
             >
               <Play className="h-3.5 w-3.5 fill-current" />
-              Watch
+              <span className="hidden sm:inline">Watch</span>
             </Button>
             <Button
               size="sm"
               variant="outline"
               asChild
-              className="gap-1.5 btn-press"
+              className="gap-1.5 btn-press px-2 sm:px-3"
             >
               <a
                 href={source.url}
@@ -408,14 +408,14 @@ export function SourceCard({ source, index, onWatch, onDownloadProgress, poster,
               className="gap-1.5 btn-press shadow-sm"
             >
               <Play className="h-3.5 w-3.5" />
-              Watch
+              <span className="hidden sm:inline">Watch</span>
             </Button>
             {onDownloadProgress ? (
               <Button
                 size="sm"
                 variant="outline"
                 onClick={onDownloadProgress}
-                className="gap-1.5 btn-press"
+                className="gap-1.5 btn-press px-2 sm:px-3"
                 title="Download with progress"
               >
                 <Download className="h-3.5 w-3.5" />
@@ -426,7 +426,7 @@ export function SourceCard({ source, index, onWatch, onDownloadProgress, poster,
                 size="sm"
                 variant="outline"
                 asChild
-                className="gap-1.5"
+                className="gap-1.5 px-2 sm:px-3"
               >
                 <a href={downloadUrlFor(source)} download>
                   <Download className="h-3.5 w-3.5" />
@@ -437,7 +437,7 @@ export function SourceCard({ source, index, onWatch, onDownloadProgress, poster,
           </>
         )}
         {/* Divider */}
-        <span aria-hidden className="mx-0.5 h-6 w-px bg-border/70" />
+        <span aria-hidden className="mx-0.5 h-6 w-px bg-border/70 hidden sm:block" />
         {/* Favorite toggle */}
         {onToggleFavorite && (
           <TooltipProvider delayDuration={300}>
@@ -448,7 +448,7 @@ export function SourceCard({ source, index, onWatch, onDownloadProgress, poster,
                   variant="ghost"
                   onClick={onToggleFavorite}
                   aria-label={isFavorite ? "Remove from favorites" : "Add to favorites"}
-                  className={cn("h-8 w-8 px-0 btn-press", isFavorite ? "text-primary" : "text-muted-foreground hover:text-primary")}
+                  className={cn("hidden h-8 w-8 px-0 btn-press sm:inline-flex", isFavorite ? "text-primary" : "text-muted-foreground hover:text-primary")}
                 >
                   {isFavorite ? (
                     <Star className="h-3.5 w-3.5 fill-primary" />
@@ -461,7 +461,7 @@ export function SourceCard({ source, index, onWatch, onDownloadProgress, poster,
             </Tooltip>
           </TooltipProvider>
         )}
-        {/* Copy embed code — hidden for captcha iframe sources (not embeddable) */}
+        {/* Copy embed code — hidden for iframe sources (not embeddable) */}
         {!isCaptchaIframe && (
           <TooltipProvider delayDuration={300}>
             <Tooltip>
@@ -471,7 +471,7 @@ export function SourceCard({ source, index, onWatch, onDownloadProgress, poster,
                   variant="ghost"
                   onClick={copyEmbed}
                   aria-label="Copy embed code"
-                  className="h-8 w-8 px-0 text-muted-foreground hover:text-foreground btn-press"
+                  className="hidden h-8 w-8 px-0 text-muted-foreground hover:text-foreground btn-press sm:inline-flex"
                 >
                   {embedCopied ? (
                     <Check className="h-3.5 w-3.5 text-primary animate-check-pop" />
@@ -492,7 +492,7 @@ export function SourceCard({ source, index, onWatch, onDownloadProgress, poster,
                 variant="ghost"
                 asChild
                 aria-label="Open source in new tab"
-                className="h-8 w-8 px-0 text-muted-foreground hover:text-foreground btn-press"
+                className="hidden h-8 w-8 px-0 text-muted-foreground hover:text-foreground btn-press sm:inline-flex"
               >
                 <a href={source.url} target="_blank" rel="noopener noreferrer">
                   <ExternalLink className="h-3.5 w-3.5" />

@@ -104,7 +104,8 @@ export function WatchDialog({ source, open, onOpenChange, title, poster, onDownl
           {onDownloadProgress ? (
             <Button size="sm" className="gap-1.5 btn-press" onClick={onDownloadProgress}>
               <Download className="h-3.5 w-3.5" />
-              Download with progress
+              <span className="hidden sm:inline">Download with progress</span>
+              <span className="sm:hidden">Download</span>
             </Button>
           ) : (
             <Button asChild size="sm" className="gap-1.5 btn-press">
@@ -122,7 +123,8 @@ export function WatchDialog({ source, open, onOpenChange, title, poster, onDownl
           >
             <a href={source.url} target="_blank" rel="noopener noreferrer">
               <ExternalLink className="h-3.5 w-3.5" />
-              Open source
+              <span className="hidden sm:inline">Open source</span>
+              <span className="sm:hidden">Open</span>
             </a>
           </Button>
           <Button
@@ -136,7 +138,7 @@ export function WatchDialog({ source, open, onOpenChange, title, poster, onDownl
             ) : (
               <Copy className="h-3.5 w-3.5" />
             )}
-            {copied ? "Copied!" : "Copy link"}
+            <span className="hidden sm:inline">{copied ? "Copied!" : "Copy link"}</span>
           </Button>
           <button
             type="button"
