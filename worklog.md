@@ -1853,3 +1853,153 @@ bandwidth (verified frozen progress), and resume continues from
 the exact byte offset. All "Cancelled" / "Failed" states caused
 by the `showSaveFilePicker` AbortError are eliminated. Lint clean,
 no server errors, end-to-end verified with agent-browser.
+
+---
+
+## Phase H-10 — HLS Download Corruption + vids.st Extraction (2025-07-30)
+
+### Project Status
+
+Stable. Next.js 16 app running on port 3000, lint clean (0 errors / 0
+warnings), no runtime/console errors. The user reported critical download bugs
+visible in 3 screenshots of an HLS (m3u8) download, plus a vids.st extraction
+issue.
+
+### Root Cause Analysis (from screenshots)
+
+The 3 screenshots showed an HLS download of a `1080p_602x1080.ts` file:
+1. Screenshot 1: 80% — `29.5 MB / 36.9 MB` (looked normal)
+2. Screenshot 2: 100% but `48.6 MB / 36.9 MB` — **downloaded MORE than total**,
+   status stuck on "Downloading", ETA showed negative garbage
+   `~-20278.590978860415 ms remaining`
+3. Screenshot 3: FAILED at `60.9 MB` (expected 36.9 MB) — network error,
+   downloaded ~24 MB PAST the expected size
+
+**Three root causes identified:**
+
+1. **HLS resume bug (CRITICAL):** `/api/stream` concatenates HLS segments
+   server-side and **ignores `Range` headers**. The old `downloadLoop` sent
+   `Range: bytes={received}-` on resume/retry, but `/api/stream` ignored it
+   and re-streamed from segment 0. The client then APPENDED this full
+   re-stream to the existing partial chunks → doubled size + corrupted file
+   (the 48.6 MB / 60.9 MB vs 36.9 MB expected).
+
+2. **Negative ETA + total never bumped:** The ETA calculation
+   `((total - received) / speed) * 1000` went negative when `received > total`
+   (which happened because of bug #1 and because `/api/size` sometimes
+   under-counts segments). The total was never updated to reality.
+
+3. **Binary corruption from text markers:** `/api/stream` injected text
+   markers `\n[segment N failed: {status}]\n` into the binary .ts stream
+   when a segment failed. These ASCII strings corrupted the video file and
+   inflated the byte count past the size estimate.
+
+### Fixes Applied
+
+**`src/components/download-progress-dialog.tsx`:**
+- Added `isHlsRef` to track whether the source is HLS/DASH (set on download
+  start via `source.type === "m3u8" || "mpd"`).
+- `downloadLoop`: Only sends `Range` header for **non-HLS** sources. For HLS,
+  no Range is sent (the endpoint ignores it anyway, but this is explicit).
+- `downloadLoop`: When `received > total`, **bumps total up to received** so
+  the progress bar never exceeds 100% and ETA never goes negative.
+- Added `restartHlsDownload(filename)`: For HLS, "resume" = clear chunks +
+  reset received to 0 + re-stream from segment 0. This prevents the
+  doubled/corrupted file. Marked `approx: true` since we're re-measuring.
+- `togglePause`: For HLS, calls `restartHlsDownload` instead of Range-based
+  resume. For non-HLS (direct MP4), keeps the Range-based resume (works
+  correctly via `/api/proxy` 206 Partial Content).
+- Error/aborted retry button: For HLS shows "Restart download" (calls
+  `restartHlsDownload`); for non-HLS shows "Resume from {bytes}" (Range).
+  Button now shows even when `received === 0` (so a fresh restart is always
+  possible after an early failure).
+- ETA clamped to `Math.max(0, ...)` so it never shows negative.
+- Pause button label: "Resume" → "Restart" for HLS sources.
+- Added amber info banner when paused on HLS: "Paused. HLS streams can't
+  resume mid-file — clicking "Restart" will re-download the video from the
+  beginning."
+- Error/aborted hint text is HLS-aware ("Click restart to re-download..."
+  vs "Click resume to continue from where it stopped.").
+
+**`src/app/api/stream/route.ts`:**
+- Removed the `TextEncoder` and all `\n[segment N failed]\n` / `\n[segment N
+  error]\n` text markers injected into the binary stream. These were
+  corrupting the .ts file and inflating byte counts.
+- Added **per-segment retry (1 retry with 500ms backoff)** for transient
+  network errors (common on HLS CDNs).
+- Failed segments are now **silently skipped** (the video has a small gap
+  there, but the file stays valid binary).
+- Decryption failure now falls back to raw bytes instead of skipping.
+- Wrapped `controller.enqueue` in try/catch to gracefully handle client
+  disconnects (breaks out of the segment loop instead of throwing).
+- Wrapped `controller.close` in try/catch (already-closed edge case).
+
+**`src/lib/site-extractors.ts` (`extractVidsSt`):**
+- Verified the extractor works for `https://vids.st/v/5524` — the page
+  contains `playerConfig = {"videoUrl":"https://cdn.vids.st/video5524/master.m3u8",...}`.
+- Added extraction of `videoName` (e.g. "1000256791.mp4") from the
+  playerConfig JSON, passed as `filename` on the HLS source so the
+  downloaded file keeps a meaningful name instead of a generic label.
+- Returns 2 sources: (1) embeddable iframe `https://vids.st/e/{id}` (PRIMARY,
+  marked `embeddable: true`, works in user's browser since CDN is
+  IP-restricted but allows the user's IP), (2) raw HLS m3u8 (FALLBACK,
+  direct — hls.js fetches it in-browser).
+
+### Verification Results (agent-browser E2E)
+
+1. **vids.st extraction** — `https://vids.st/v/5524`:
+   - POST `/api/extract` → 200, returns 2 sources (iframe embed marked "Best"
+     + HLS direct). Meta: title "1000256791.mp4 - VIDS.ST...", thumbnail
+     extracted. Filename "1000256791.mp4" captured.
+   - "Watch best" → watch dialog opens, vids.st embed iframe renders (Video
+     element + Play button visible). Preview works.
+
+2. **HLS download (large, 478.9 MB test stream):**
+   - `https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8` → 5 HLS sources.
+   - "Download with progress" → dialog opens, `/api/size` resolves total to
+     478.9 MB, download progresses: 40→156 MB, ETA `~37.2 s remaining`
+     (POSITIVE, not negative), speed 8.7 MB/s.
+   - **Pause test:** Clicked Pause → amber banner "Paused. HLS streams can't
+     resume mid-file..." + button shows "Restart" (not "Resume").
+   - **Restart test:** Clicked Restart → downloaded resets to 40 MB (from 0,
+     NOT appended to previous ~190 MB), total stays 478.9 MB (not doubled).
+     Confirms the corruption fix.
+   - Cancel → clean aborted state.
+
+3. **HLS download to completion (small, 47.3 MB test stream):**
+   - `https://test-streams.mux.dev/pts_shift/master.m3u8` → 6 sources.
+   - Download progresses 7.8→32→37.6→47.3 MB, then **completes cleanly**:
+     status "Saved", `47.3 MB / 47.3 MB` (received == total, no exceeding),
+     "Done in 21.8 s", toast "Download complete — saved to your downloads",
+     "Saved to downloads" badge + "Save again" button. NO failure, NO
+     negative ETA, NO corruption.
+
+4. **Server log:** All API calls return 200 (extract, size, stream). No 404,
+   no 502, no errors. Two `/api/stream` calls observed (initial + restart) —
+   both 200, second one properly re-streamed from scratch.
+
+5. **Lint:** 0 errors / 0 warnings.
+
+### Files Modified
+- `src/components/download-progress-dialog.tsx` — HLS restart logic, ETA
+  clamp, total bump, HLS-aware labels/hints, amber pause banner.
+- `src/app/api/stream/route.ts` — removed text markers, added retry, silent
+  skip, disconnect handling.
+- `src/lib/site-extractors.ts` — `extractVidsSt` now captures `videoName`
+  as filename.
+
+### Unresolved Issues / Risks
+- HLS downloads still use in-memory Blob accumulation. For very large HLS
+  videos (>500 MB) this could hit browser memory limits on low-RAM devices.
+  Mitigation: modern browsers handle multi-hundred-MB Blobs fine; a future
+  phase could add streaming via the File System Access API (with a fallback
+  to Blob for browsers without it).
+- `/api/size` can take 10-20s for playlists with many segments (parallel
+  HEAD requests). The progress bar shows indeterminate until it resolves.
+  Acceptable but could be optimized with a streaming size estimate.
+
+### Priority Recommendations for Next Phase
+1. Add a "Download all" batch action for multi-source results.
+2. Add download queue management (pause/cancel multiple concurrent downloads).
+3. Improve `/api/size` performance with streaming/partial estimates.
+4. Add keyboard shortcuts (Esc to close, Space to pause/resume).
