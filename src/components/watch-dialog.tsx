@@ -53,20 +53,20 @@ export function WatchDialog({ source, open, onOpenChange, title, poster, onDownl
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl gap-0 overflow-hidden p-0 sm:rounded-xl">
-        <DialogHeader className="border-b border-border px-4 py-3">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
+      <DialogContent className="max-w-3xl gap-0 overflow-hidden p-0 sm:rounded-xl w-[calc(100vw-1rem)] max-w-[calc(100vw-1rem)] sm:w-full sm:max-w-3xl max-h-[calc(100vh-1rem)] sm:max-h-[90vh] flex flex-col">
+        <DialogHeader className="border-b border-border px-3 py-2.5 sm:px-4 sm:py-3 shrink-0">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0 flex-1">
               <DialogTitle className="truncate text-sm font-semibold">
                 {title || source.quality || "Preview"}
               </DialogTitle>
-              <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+              <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
                 <span className="flex items-center gap-1">
                   <Globe className="h-3 w-3" />
                   {host}
                 </span>
                 <span className="text-muted-foreground/40">·</span>
-                <Badge variant="secondary" className="px-1.5 py-0 text-[10px] font-semibold uppercase">
+                <Badge variant="secondary" className="px-1.5 py-0 text-[10px] font-semibold">
                   {source.type}
                 </Badge>
                 {source.quality && (
@@ -78,7 +78,7 @@ export function WatchDialog({ source, open, onOpenChange, title, poster, onDownl
                   <span className="rounded-md bg-muted px-1 py-0 text-[10px] text-muted-foreground/70">{source.size}</span>
                 )}
                 {source.ext && (
-                  <span className="text-[10px] uppercase text-muted-foreground/60">.{source.ext}</span>
+                  <span className="text-[10px] text-muted-foreground/60">.{source.ext}</span>
                 )}
               </div>
             </div>
@@ -88,7 +88,7 @@ export function WatchDialog({ source, open, onOpenChange, title, poster, onDownl
           </DialogDescription>
         </DialogHeader>
 
-        <div className="bg-black">
+        <div className="bg-black shrink-0">
           <VideoPlayer
             url={source.url}
             type={source.type}
@@ -100,7 +100,7 @@ export function WatchDialog({ source, open, onOpenChange, title, poster, onDownl
         </div>
 
         {/* Action bar */}
-        <div className="flex flex-wrap items-center gap-2 border-t border-border bg-card/80 px-4 py-3 backdrop-blur-sm">
+        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 border-t border-border bg-card/80 px-3 py-2.5 sm:px-4 sm:py-3 backdrop-blur-sm shrink-0">
           {onDownloadProgress ? (
             <Button size="sm" className="gap-1.5 btn-press" onClick={onDownloadProgress}>
               <Download className="h-3.5 w-3.5" />
@@ -138,7 +138,7 @@ export function WatchDialog({ source, open, onOpenChange, title, poster, onDownl
             ) : (
               <Copy className="h-3.5 w-3.5" />
             )}
-            <span className="hidden sm:inline">{copied ? "Copied!" : "Copy link"}</span>
+            <span className="hidden sm:inline">{copied ? "Copied" : "Copy link"}</span>
           </Button>
           <button
             type="button"
@@ -146,14 +146,14 @@ export function WatchDialog({ source, open, onOpenChange, title, poster, onDownl
             className="ml-auto flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground btn-press"
           >
             <Clock className="h-3 w-3" />
-            {showRaw ? "Hide link" : "Show link"}
+            {showRaw ? "Hide" : "Show link"}
           </button>
         </div>
         {showRaw && (
-          <div className="animate-fade-up border-t border-border bg-muted/30 px-4 py-3 backdrop-blur-sm">
-            <div className="flex items-center gap-2">
+          <div className="animate-fade-up border-t border-border bg-muted/30 px-3 py-2.5 sm:px-4 sm:py-3 backdrop-blur-sm shrink-0 overflow-x-auto">
+            <div className="flex items-center gap-2 min-w-0">
               <Globe className="h-3 w-3 shrink-0 text-muted-foreground/50" />
-              <p className="truncate break-all font-mono text-[11px] text-muted-foreground leading-relaxed">
+              <p className="truncate break-all font-mono text-[11px] text-muted-foreground leading-relaxed min-w-0">
                 {source.url}
               </p>
             </div>

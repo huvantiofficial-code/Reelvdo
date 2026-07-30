@@ -6,7 +6,7 @@ import {
   X,
   Loader2,
   CheckCircle2,
-  AlertCircle,
+  Info,
   Pause,
   Play,
 } from "lucide-react";
@@ -143,7 +143,7 @@ export function DownloadProgressDialog({
 
     // For HLS/DASH, the /api/stream response has no Content-Length (segments
     // are concatenated server-side). Pre-fetch the total via /api/size so we
-    // can show a real % bar. This races with the download start — whichever
+    // can show a real % bar. This races with the download start - whichever
     // finishes first sets the total; if /api/size fails, we fall back to
     // indeterminate (null total). When HEAD fails for some segments, /api/size
     // also returns a duration-weighted `estimated` total which we use as a
@@ -178,14 +178,14 @@ export function DownloadProgressDialog({
           }
         })
         .catch(() => {
-          // ignore — indeterminate progress is fine
+          // ignore - indeterminate progress is fine
         });
     }
 
     (async () => {
       try {
         // Refresh the source URL before downloading. This ensures we have a
-        // fresh, unused token — critical for sites like streamtape that
+        // fresh, unused token - critical for sites like streamtape that
         // rate-limit tokens (e.g., after the user watched the preview, the
         // original token may be exhausted). For HLS/DASH we keep the original
         // URL (refreshing the master playlist is expensive and rarely needed).
@@ -219,7 +219,7 @@ export function DownloadProgressDialog({
               }
             }
           } catch {
-            // Refresh failed (abort, network, etc.) — fall back to original.
+            // Refresh failed (abort, network, etc.) - fall back to original.
           }
         }
 
@@ -229,7 +229,7 @@ export function DownloadProgressDialog({
         const url = downloadUrlFor(effectiveSource);
         const res = await fetch(url, {
           signal: controller.signal,
-          // Don't follow redirects automatically — curl-side already does.
+          // Don't follow redirects automatically - curl-side already does.
           redirect: "follow",
         });
         if (!res.ok) {
@@ -242,13 +242,13 @@ export function DownloadProgressDialog({
           ...s,
           phase: "downloading",
           // Prefer the server's Content-Length (always measured); fall back to
-          // /api/size result if available (HLS case) — which may be an estimate.
+          // /api/size result if available (HLS case) - which may be an estimate.
           total: Number.isFinite(total) && total ? total : (sizeTotal ?? null),
           approx: Number.isFinite(total) && total ? false : sizeApprox,
         }));
 
         if (!res.body) {
-          // No streaming — just bail to a regular download.
+          // No streaming - just bail to a regular download.
           throw new Error("No response body; use direct download");
         }
 
@@ -439,7 +439,7 @@ export function DownloadProgressDialog({
                     {formatBytes(state.total)}
                     {state.approx && (
                       <span
-                        className="ml-1 rounded border border-primary/30 bg-primary/10 px-1 py-px text-[8px] font-bold uppercase text-primary/80"
+                        className="ml-1 rounded border border-primary/30 bg-primary/10 px-1 py-px text-[8px] font-bold text-primary/80"
                         title="Some segment sizes were estimated from duration"
                       >
                         approx
@@ -470,7 +470,7 @@ export function DownloadProgressDialog({
           {/* Error message */}
           {state.phase === "error" && state.error && (
             <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-3">
-              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+              <Info className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
               <div className="min-w-0">
                 <p className="text-xs font-medium text-destructive">
                   Could not download
@@ -575,14 +575,14 @@ function PhasePill({ phase }: { phase: Phase }) {
     fetching: { label: "Starting", icon: Loader2, cls: "text-primary" },
     downloading: { label: "Downloading", icon: Loader2, cls: "text-primary" },
     done: { label: "Ready", icon: CheckCircle2, cls: "text-emerald-600 dark:text-emerald-400" },
-    error: { label: "Failed", icon: AlertCircle, cls: "text-destructive" },
+    error: { label: "Failed", icon: Info, cls: "text-destructive" },
     aborted: { label: "Cancelled", icon: X, cls: "text-muted-foreground" },
   };
   const { label, icon: Icon, cls } = map[phase];
   const spin = phase === "fetching" || phase === "downloading";
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${cls}`}
+      className={`inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold ${cls}`}
     >
       <Icon className={`h-3 w-3 ${spin ? "animate-spin" : ""}`} />
       {label}

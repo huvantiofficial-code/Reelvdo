@@ -15,7 +15,7 @@ import {
   Star,
   StarOff,
   Code2,
-  ShieldAlert,
+  Lock,
   Eye,
 } from "lucide-react";
 import type { MediaType, VideoSource } from "@/lib/types";
@@ -43,23 +43,23 @@ const TYPE_LABEL: Record<MediaType, string> = {
 };
 
 const TYPE_ACCENT: Partial<Record<MediaType, string>> = {
-  m3u8: "from-sky-500/85 to-sky-600/95",
-  mpd: "from-violet-500/85 to-violet-600/95",
-  mp4: "from-emerald-500/85 to-emerald-600/95",
-  webm: "from-amber-500/85 to-amber-600/95",
-  ts: "from-rose-500/85 to-rose-600/95",
-  mov: "from-cyan-500/85 to-cyan-600/95",
-  mkv: "from-orange-500/85 to-orange-600/95",
+  m3u8: "from-primary/85 to-primary/95",
+  mpd: "from-primary/85 to-primary/95",
+  mp4: "from-primary/85 to-primary/95",
+  webm: "from-primary/85 to-primary/95",
+  ts: "from-primary/85 to-primary/95",
+  mov: "from-primary/85 to-primary/95",
+  mkv: "from-primary/85 to-primary/95",
 };
 
 const TYPE_ICON_COLOR: Partial<Record<MediaType, string>> = {
-  m3u8: "text-sky-600 dark:text-sky-400",
-  mpd: "text-violet-600 dark:text-violet-400",
-  mp4: "text-emerald-600 dark:text-emerald-400",
-  webm: "text-amber-600 dark:text-amber-400",
-  ts: "text-rose-600 dark:text-rose-400",
-  mov: "text-cyan-600 dark:text-cyan-400",
-  mkv: "text-orange-600 dark:text-orange-400",
+  m3u8: "text-primary",
+  mpd: "text-primary",
+  mp4: "text-primary",
+  webm: "text-primary",
+  ts: "text-primary",
+  mov: "text-primary",
+  mkv: "text-primary",
 };
 
 function TypeIcon({ type, className }: { type: MediaType; className?: string }) {
@@ -116,7 +116,7 @@ export function embedCodeFor(src: VideoSource): string {
   const url = src.url;
   if (src.type === "m3u8" || src.type === "mpd") {
     // Use hls.js via CDN for HLS/DASH playback in embed
-    return `<!-- HLS/DASH embed — requires hls.js -->
+    return `<!-- HLS/DASH embed - requires hls.js -->
 <div style="position:relative;padding-bottom:56.25%;height:0;overflow:hidden;border-radius:8px;">
   <video id="reel-${Date.now().toString(36)}" controls playsinline
     style="position:absolute;top:0;left:0;width:100%;height:100%;background:#000;"></video>
@@ -152,16 +152,13 @@ interface SourceCardProps {
   onDownloadProgress?: () => void;
   poster?: string;
   isBest?: boolean;
-  showKeyHint?: boolean;
   isFavorite?: boolean;
   onToggleFavorite?: () => void;
   /** Card index for stagger animation. */
   cardIdx?: number;
-  /** When true (e.g. Alt key held), show large number overlay on cards 1-9 */
-  showNumberOverlay?: boolean;
 }
 
-export function SourceCard({ source, index, onWatch, onDownloadProgress, poster, isBest, showKeyHint = true, isFavorite, onToggleFavorite, cardIdx = 0, showNumberOverlay = false }: SourceCardProps) {
+export function SourceCard({ source, index, onWatch, onDownloadProgress, poster, isBest, isFavorite, onToggleFavorite, cardIdx = 0 }: SourceCardProps) {
   const [copied, setCopied] = useState(false);
   const [embedCopied, setEmbedCopied] = useState(false);
   const [imgOk, setImgOk] = useState(true);
@@ -171,14 +168,14 @@ export function SourceCard({ source, index, onWatch, onDownloadProgress, poster,
   const iconColor = TYPE_ICON_COLOR[source.type] || "text-primary";
   // iframe sources are pages that require interactive captcha (e.g.
   // playmogo.com DoodStream clones). We can't preview/download them
-  // server-side — the user must open the page in a new tab.
+  // server-side - the user must open the page in a new tab.
   const isIframe = source.type === "iframe";
   // Embeddable iframes are meant to be played inline in the watch dialog
   // via `<iframe src="...">` (e.g. YouTube /embed/{id}, FB /plugins/video.php,
   // Instagram /reel/{id}/embed/, Telegram ?embed=1, VK video_ext.php,
   // Twitter platform.twitter.com/embed). These get a "Watch" button.
   // Non-embeddable iframes are captcha-protected pages that the user must
-  // open in a new tab — they get an "Open page" button only.
+  // open in a new tab - they get an "Open page" button only.
   const isEmbeddable = isIframe && source.embeddable === true;
   const isCaptchaIframe = isIframe && !isEmbeddable;
   // For iframe sources, the label/quality tells us which page this is
@@ -207,7 +204,7 @@ export function SourceCard({ source, index, onWatch, onDownloadProgress, poster,
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       className={cn(
-        "group relative flex flex-col gap-3 overflow-hidden rounded-xl border border-border/60 bg-card/70 p-3.5 transition-all duration-200 backdrop-blur-sm",
+        "group relative flex flex-col gap-3 overflow-hidden rounded-xl border border-border/60 bg-card/70 p-4 transition-all duration-200 backdrop-blur-sm",
         "card-hover hover:border-primary/40 hover:shadow-lg hover:shadow-primary/10",
         "sm:flex-row sm:items-center sm:justify-between",
         isBest && "gradient-border border-primary/40 ring-1 ring-primary/20 animate-best-pulse",
@@ -235,7 +232,7 @@ export function SourceCard({ source, index, onWatch, onDownloadProgress, poster,
       />
 
       <div className="flex min-w-0 items-center gap-3">
-        {/* Thumbnail / icon — 16:9 aspect, larger */}
+        {/* Thumbnail / icon - 16:9 aspect, larger */}
         <div className="relative flex h-16 w-[5.5rem] shrink-0 items-center justify-center overflow-hidden rounded-lg shadow-sm ring-1 ring-border/40 sm:h-14 sm:w-20">
           {poster && imgOk ? (
             <img
@@ -259,26 +256,18 @@ export function SourceCard({ source, index, onWatch, onDownloadProgress, poster,
             aria-hidden
             className="pointer-events-none absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-black/40 to-transparent"
           />
-          {/* Type badge — gradient pill with shadow */}
+          {/* Type badge - gradient pill with shadow */}
           <span
             className={cn(
-              "absolute bottom-1 left-1 rounded-md bg-gradient-to-br px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.04em] text-white shadow-md backdrop-blur-sm",
+              "absolute bottom-1 left-1 rounded-md bg-gradient-to-br px-1.5 py-0.5 text-[9px] font-bold text-white shadow-md backdrop-blur-sm",
               accent
             )}
           >
             {TYPE_LABEL[source.type]}
           </span>
           {isBest && (
-            <span className="absolute right-1 top-1 rounded-md bg-gradient-to-br from-primary to-primary/80 px-2 py-0.5 text-[8px] font-bold uppercase tracking-[0.04em] text-primary-foreground shadow-md shadow-primary/30 animate-bounce-gentle">
+            <span className="absolute right-1 top-1 rounded-md bg-gradient-to-br from-primary to-primary/80 px-2 py-0.5 text-[8px] font-bold text-primary-foreground shadow-md shadow-primary/30 animate-bounce-gentle">
               Best
-            </span>
-          )}
-          {/* Keyboard number overlay — shown when Alt held */}
-          {showNumberOverlay && index < 9 && (
-            <span className="absolute inset-0 z-10 flex items-center justify-center bg-background/80 backdrop-blur-sm animate-scale-in">
-              <span className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-base font-bold text-primary-foreground shadow-lg shadow-primary/40 ring-2 ring-primary-foreground/30">
-                {index + 1}
-              </span>
             </span>
           )}
         </div>
@@ -300,13 +289,13 @@ export function SourceCard({ source, index, onWatch, onDownloadProgress, poster,
               </span>
             )}
             {source.ext && (
-              <span className="text-[10px] font-bold uppercase text-muted-foreground/80">
+              <span className="text-[10px] font-bold text-muted-foreground/80">
                 .{source.ext}
               </span>
             )}
             {isCaptchaIframe && (
-              <span className="inline-flex items-center gap-0.5 rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600 dark:text-amber-400">
-                <ShieldAlert className="h-2.5 w-2.5" />
+              <span className="inline-flex items-center gap-0.5 rounded-md bg-primary/15 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
+                <Lock className="h-2.5 w-2.5" />
                 Captcha
               </span>
             )}
@@ -322,23 +311,15 @@ export function SourceCard({ source, index, onWatch, onDownloadProgress, poster,
             <span className="truncate font-medium">{host}</span>
             <span className="text-muted-foreground/40">·</span>
             <span className="shrink-0 rounded-sm bg-muted px-1 tabular-nums text-[10px] font-bold">#{index + 1}</span>
-            {index < 9 && showKeyHint && (
-              <kbd
-                className="hidden shrink-0 rounded border border-border bg-muted px-1 py-px font-mono text-[9px] font-bold text-foreground/70 shadow-sm sm:inline"
-                title={`Press ${index + 1} to open`}
-              >
-                {index + 1}
-              </kbd>
-            )}
           </div>
           {isCaptchaIframe && (
-            <div className="mt-1.5 text-[10px] leading-tight text-amber-600 dark:text-amber-400/90">
+            <div className="mt-1.5 text-[10px] leading-tight text-primary/90">
               Site requires interactive captcha. Open in a new tab to watch or download.
             </div>
           )}
           {isEmbeddable && (
             <div className="mt-1.5 text-[10px] leading-tight text-emerald-600 dark:text-emerald-400/90">
-              Official embed player — plays inline in the watch dialog.
+              Official embed player - plays inline in the watch dialog.
             </div>
           )}
         </div>
@@ -348,7 +329,7 @@ export function SourceCard({ source, index, onWatch, onDownloadProgress, poster,
         {isCaptchaIframe ? (
           // For captcha-protected iframe pages, render a single
           // prominent "Open page" button that opens the URL in a new tab.
-          // No Watch/Download buttons — those would fail because the URL is
+          // No Watch/Download buttons - those would fail because the URL is
           // an HTML page, not a media file.
           <Button
             size="sm"
@@ -461,7 +442,7 @@ export function SourceCard({ source, index, onWatch, onDownloadProgress, poster,
             </Tooltip>
           </TooltipProvider>
         )}
-        {/* Copy embed code — hidden for iframe sources (not embeddable) */}
+        {/* Copy embed code - hidden for iframe sources (not embeddable) */}
         {!isCaptchaIframe && (
           <TooltipProvider delayDuration={300}>
             <Tooltip>

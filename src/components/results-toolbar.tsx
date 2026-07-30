@@ -197,7 +197,7 @@ export function ResultsToolbar({ sources, host, onClear, qualitySort, onQualityS
       {/* Filter pills */}
       {available.length > 1 && (
         <div className="flex flex-wrap items-center gap-1.5 px-1">
-          <span className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/70">
+          <span className="flex items-center gap-1 text-[10px] font-semibold text-muted-foreground/70">
             <Filter className="h-3 w-3" />
             Filter
           </span>

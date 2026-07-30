@@ -13,12 +13,6 @@ import {
   SheetTrigger,
   SheetFooter,
 } from "@/components/ui/sheet";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { useSettings } from "@/hooks/use-settings";
 import { cn } from "@/lib/utils";
 
@@ -159,38 +153,13 @@ export function SettingsDrawer({ settings, update, reset }: SettingsDrawerProps)
             />
           </Row>
 
-          {/* Key hints */}
-          <TooltipProvider delayDuration={200}>
-            <Row
-              id="show-key-hints"
-              title="Keyboard hints on cards"
-              description="Show number-key chips on source cards (1–9)."
-            >
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <div>
-                    <Switch
-                      id="show-key-hints"
-                      checked={settings.showKeyHints}
-                      onCheckedChange={(v) => update({ showKeyHints: v })}
-                      aria-label="Show keyboard hints"
-                    />
-                  </div>
-                </TooltipTrigger>
-                <TooltipContent side="left">
-                  Press 1–9 to open a source, D to download the best.
-                </TooltipContent>
-              </Tooltip>
-            </Row>
-          </TooltipProvider>
-
           {/* History limit */}
           <div className="py-3">
             <Label htmlFor="history-limit" className="text-sm font-medium text-foreground">
               History limit
             </Label>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              Number of recent fetches shown in the panel (5–100).
+              Number of recent fetches shown in the panel (5-100).
             </p>
             <div className="mt-2 flex items-center gap-2">
               <input

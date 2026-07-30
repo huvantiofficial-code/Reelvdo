@@ -6,10 +6,8 @@ import {
   Download,
   Globe,
   Clock,
-  Sparkles,
   FileVideo,
   ExternalLink,
-  Zap,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -23,7 +21,7 @@ import { cn } from "@/lib/utils";
 import type { ExtractMeta, VideoSource } from "@/lib/types";
 import { downloadUrlFor } from "@/components/source-card";
 
-// ─── Known site extractors ──────────────────────────────────────────────
+// --- Known site extractors ---
 // Maps host substrings to a short display label for the extraction method badge.
 const KNOWN_SITES: { match: string[]; label: string }[] = [
   { match: ["luluvdo", "lulustream", "luluvid"], label: "lulustream" },
@@ -82,7 +80,7 @@ function faviconUrl(host: string): string {
   return `https://icons.duckduckgo.com/ip3/${encodeURIComponent(host)}.ico`;
 }
 
-// ─── Props ──────────────────────────────────────────────────────────────
+// --- Props ---
 
 interface ResultSummaryCardProps {
   meta: ExtractMeta;
@@ -124,7 +122,7 @@ export function ResultSummaryCard({
       {/* Top accent strip */}
       <div aria-hidden className="h-0.5 bg-gradient-to-r from-primary/0 via-primary/60 to-primary/0" />
       <div className="flex flex-col sm:flex-row gap-4 p-4 sm:p-5">
-        {/* ─── Thumbnail ─────────────────────────────────────────────── */}
+        {/* --- Thumbnail --- */}
         <div
           className={cn(
             "relative flex items-center justify-center overflow-hidden rounded-lg shrink-0",
@@ -158,7 +156,7 @@ export function ResultSummaryCard({
           </span>
         </div>
 
-        {/* ─── Content ───────────────────────────────────────────────── */}
+        {/* --- Content --- */}
         <div className="flex flex-col gap-2 min-w-0 flex-1">
           {/* Title row */}
           {meta.title && (
@@ -211,7 +209,7 @@ export function ResultSummaryCard({
             </p>
           )}
 
-          {/* ─── Metadata line ───────────────────────────────────────── */}
+          {/* --- Metadata line --- */}
           <div className="flex flex-wrap items-center gap-2 mt-1">
             {/* Extraction method badge */}
             {isSiteExtractor ? (
@@ -219,7 +217,6 @@ export function ResultSummaryCard({
                 variant="default"
                 className="gap-1 text-[10px] px-2 py-0.5 font-bold animate-scale-in shadow-sm shadow-primary/20"
               >
-                <Sparkles className="h-3 w-3" />
                 Site extractor · {siteName}
               </Badge>
             ) : (
@@ -227,7 +224,6 @@ export function ResultSummaryCard({
                 variant="outline"
                 className="gap-1 text-[10px] px-2 py-0.5 font-semibold animate-scale-in"
               >
-                <Zap className="h-3 w-3 text-primary" />
                 Generic scan
               </Badge>
             )}
@@ -253,7 +249,7 @@ export function ResultSummaryCard({
             )}
           </div>
 
-          {/* ─── Action buttons ──────────────────────────────────────── */}
+          {/* --- Action buttons --- */}
           {bestSource && (
             <div className="flex items-center gap-2 mt-2">
               {onWatchBest && (

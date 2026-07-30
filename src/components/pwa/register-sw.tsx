@@ -6,7 +6,7 @@ import { useEffect } from "react";
  * Registers the Reel service worker (`/sw.js`) in production only.
  *
  * In development the SW is intentionally skipped to avoid caching live
- * source files and masking HMR / errors. Returns `null` — this component
+ * source files and masking HMR / errors. Returns `null` - this component
  * is purely a side-effect.
  */
 export default function RegisterSW() {
@@ -29,7 +29,7 @@ export default function RegisterSW() {
               installing.state === "installed" &&
               navigator.serviceWorker.controller
             ) {
-              // A new SW has taken over — could surface a toast here.
+              // A new SW has taken over - could surface a toast here.
               console.info("[Reel PWA] Service worker updated.");
             }
           });

@@ -27,7 +27,7 @@ export function VideoPlayer({ url, type, poster, title, pageUrl, embeddable }: P
 
   // For embeddable iframes, render an `<iframe>` directly. The URL is the
   // official embed endpoint (YouTube /embed/, FB /plugins/video.php, etc.)
-  // which serves an HTML player. We don't proxy it — the iframe loads the
+  // which serves an HTML player. We don't proxy it - the iframe loads the
   // embed URL directly from the host (which sets its own cookies/CORS).
   const isEmbeddableIframe = embeddable === true && type === "iframe";
 
@@ -47,7 +47,7 @@ export function VideoPlayer({ url, type, poster, title, pageUrl, embeddable }: P
       })();
 
   useEffect(() => {
-    // Skip the video-element effect for embeddable iframes — they render
+    // Skip the video-element effect for embeddable iframes - they render
     // via `<iframe>` and don't need hls.js/dash.js/proxy setup.
     if (isEmbeddableIframe) return;
     const video = videoRef.current;
@@ -67,12 +67,20 @@ export function VideoPlayer({ url, type, poster, title, pageUrl, embeddable }: P
         setErrMsg(e);
       }
     };
+    const onLoadedMetadata = () => {
+      // Switch to full preload once the metadata has loaded and playback is
+      // about to start - this lets the browser fill a larger buffer ahead of
+      // the playhead for smoother streaming.
+      if (!cancelled && video) video.preload = "auto";
+      onReady();
+    };
 
     if (type === "m3u8") {
       // Native HLS (Safari)
       if (video.canPlayType("application/vnd.apple.mpegurl")) {
         video.src = playable;
-        video.addEventListener("loadedmetadata", onReady, { once: true });
+        video.preload = "auto";
+        video.addEventListener("loadedmetadata", onLoadedMetadata, { once: true });
         video.addEventListener("error", () => onErr("Could not load this stream"), { once: true });
       } else {
         import("hls.js")
@@ -83,6 +91,10 @@ export function VideoPlayer({ url, type, poster, title, pageUrl, embeddable }: P
                 enableWorker: true,
                 lowLatencyMode: false,
                 backBufferLength: 90,
+                maxBufferLength: 30,
+                maxMaxBufferLength: 60,
+                startLevel: -1,
+                abrEwmaDefaultEstimate: 1000000,
                 xhrSetup: (xhr) => {
                   xhr.withCredentials = false;
                 },
@@ -114,7 +126,7 @@ export function VideoPlayer({ url, type, poster, title, pageUrl, embeddable }: P
     } else {
       // Direct file via proxy.
       video.src = playable;
-      video.addEventListener("loadedmetadata", onReady, { once: true });
+      video.addEventListener("loadedmetadata", onLoadedMetadata, { once: true });
       video.addEventListener("error", () => onErr("Could not load this file"), { once: true });
     }
 
@@ -170,7 +182,7 @@ export function VideoPlayer({ url, type, poster, title, pageUrl, embeddable }: P
           playsInline
           poster={poster}
           className="h-full w-full bg-black"
-          preload="metadata"
+          preload="none"
           title={title}
         />
       </div>

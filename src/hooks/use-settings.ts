@@ -4,15 +4,13 @@ import { useCallback, useEffect, useState } from "react";
 
 /** Persisted user preferences. Stored in localStorage under REEL_SETTINGS. */
 export interface ReelSettings {
-  /** "progress" (default) or "direct" — whether the Download button opens the
+  /** "progress" (default) or "direct" - whether the Download button opens the
    *  progress dialog or navigates straight to the file. */
   downloadMode: "progress" | "direct";
   /** Auto-open the watch dialog after a successful extract. */
   autoWatch: boolean;
   /** Show the "Best" badge on the highest-quality source. */
   showBestBadge: boolean;
-  /** Show keyboard hint kbd chips on source cards. */
-  showKeyHints: boolean;
   /** Default history limit (entries shown in the panel). */
   historyLimit: number;
 }
@@ -21,7 +19,6 @@ export const DEFAULT_SETTINGS: ReelSettings = {
   downloadMode: "progress",
   autoWatch: false,
   showBestBadge: true,
-  showKeyHints: true,
   historyLimit: 20,
 };
 

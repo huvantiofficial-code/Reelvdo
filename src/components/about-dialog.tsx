@@ -9,8 +9,8 @@ import {
 } from "@/components/ui/dialog";
 import {
   Clapperboard,
-  ShieldCheck,
-  Zap,
+  Clock,
+  Lock,
   Globe,
   Code2,
   Heart,
@@ -29,9 +29,9 @@ interface AboutDialogProps {
 }
 
 const FEATURES = [
-  { icon: Zap, label: "Fast extraction", desc: "Cloudflare-aware curl backend scans pages in seconds" },
-  { icon: ShieldCheck, label: "Secure proxy", desc: "All downloads proxied through server — no direct exposure" },
-  { icon: Layers, label: "Multi-format", desc: "HLS, DASH, MP4, TS, WEBM — detects and classifies automatically" },
+  { icon: Clock, label: "Fast extraction", desc: "Cloudflare-aware curl backend scans pages in seconds" },
+  { icon: Lock, label: "Secure proxy", desc: "All downloads proxied through server - no direct exposure" },
+  { icon: Layers, label: "Multi-format", desc: "HLS, DASH, MP4, TS, WEBM - detects and classifies automatically" },
   { icon: FileVideo, label: "Inline preview", desc: "Watch any source directly in the browser with HLS.js support" },
   { icon: MonitorPlay, label: "Site extractors", desc: "10+ specialized parsers for popular video hosting platforms" },
   { icon: Film, label: "Batch mode", desc: "Paste multiple URLs and fetch all sources in parallel" },
@@ -81,7 +81,7 @@ export function AboutDialog({ open, onOpenChange, version = "2.3" }: AboutDialog
 
           {/* Tech stack */}
           <div className="mt-4 rounded-lg border border-border/50 bg-muted/30 p-3">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground/70">
+            <p className="text-[10px] font-bold text-muted-foreground/70">
               Built with
             </p>
             <div className="mt-1.5 flex flex-wrap items-center gap-1.5">

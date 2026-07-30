@@ -11,7 +11,7 @@ interface StatsBadgeProps {
 }
 
 /**
- * StatsBadge — renders the usage stats pill with an animated count-up.
+ * StatsBadge - renders the usage stats pill with an animated count-up.
  *
  * - `hero` variant: full 3-stat display, larger, animated.
  * - `footer` variant: compact single-stat, no animation (footer is subtle).

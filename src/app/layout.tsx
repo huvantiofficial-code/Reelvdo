@@ -13,7 +13,7 @@ const workSans = Work_Sans({
 });
 
 export const metadata: Metadata = {
-  title: "Reel — Video Fetch & Download",
+  title: "Reel - Video Fetch & Download",
   description: "Paste a link. Fetch the video. Watch or download in one click.",
   keywords: ["video downloader", "m3u8", "mp4", "video fetch", "stream download"],
   authors: [{ name: "Reel" }],

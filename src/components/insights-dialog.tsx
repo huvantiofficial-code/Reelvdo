@@ -74,7 +74,7 @@ interface InsightsDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
-/** Emerald palette — primary at descending opacities. Works in light + dark. */
+/** Emerald palette - primary at descending opacities. Works in light + dark. */
 const PALETTE = [
   "var(--primary)",
   "color-mix(in oklch, var(--primary) 80%, transparent)",
@@ -85,7 +85,7 @@ const PALETTE = [
 
 /** Format a millisecond duration as a compact "1.2s" / "450ms" string. */
 function formatMs(ms: number): string {
-  if (!ms || ms <= 0) return "—";
+  if (!ms || ms <= 0) return "-";
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
 }
@@ -105,7 +105,7 @@ function relativeTime(iso: string): string {
     if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
     return `${Math.floor(diff / 86_400_000)}d ago`;
   } catch {
-    return "—";
+    return "-";
   }
 }
 
@@ -115,7 +115,7 @@ function truncateHost(h: string, max = 22): string {
   return h.slice(0, max - 1) + "…";
 }
 
-/** Custom tooltip used by all charts — themed with CSS variables. */
+/** Custom tooltip used by all charts - themed with CSS variables. */
 function ChartTooltip({
   active,
   payload,
@@ -169,7 +169,7 @@ function KpiCard({
           <Icon className="h-3.5 w-3.5" />
         </span>
         {hint && (
-          <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
+          <span className="text-[10px] font-medium text-muted-foreground/60">
             {hint}
           </span>
         )}
@@ -261,7 +261,7 @@ export function InsightsDialog({ open, onOpenChange }: InsightsDialogProps) {
           </DialogDescription>
         </DialogHeader>
 
-        {/* Body — scrollable */}
+        {/* Body - scrollable */}
         <div className="scroll-thin flex-1 overflow-y-auto px-6 pb-6">
           {loading && (
             <div className="flex min-h-[260px] flex-col items-center justify-center gap-3 text-muted-foreground">

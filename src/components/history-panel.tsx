@@ -8,7 +8,7 @@ import {
   Loader2,
   Clock,
   Check,
-  AlertCircle,
+  Info,
   ExternalLink,
   Search,
   X,
@@ -35,7 +35,7 @@ import { toast } from "sonner";
 interface HistoryPanelProps {
   /** Called when the user clicks "re-fetch" on an entry. */
   onRefetch: (url: string) => void;
-  /** Refresh signal — parent can bump this to force a reload after a fetch. */
+  /** Refresh signal - parent can bump this to force a reload after a fetch. */
   refreshKey: number;
   /** Maximum number of entries to fetch from the API. */
   limit?: number;
@@ -198,7 +198,7 @@ export function HistoryPanel({ onRefetch, refreshKey, limit = 20 }: HistoryPanel
           <History className="h-4 w-4 text-primary" />
           Recent fetches
           {entries.length > 0 && (
-            <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary">
+            <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-semibold text-primary">
               {entries.length}
             </span>
           )}
@@ -219,7 +219,7 @@ export function HistoryPanel({ onRefetch, refreshKey, limit = 20 }: HistoryPanel
 
           {!loading && err && (
             <div className="flex items-center gap-2 px-4 py-6 text-sm text-destructive">
-              <AlertCircle className="h-4 w-4" />
+              <Info className="h-4 w-4" />
               {err}
             </div>
           )}

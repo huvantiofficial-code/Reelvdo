@@ -13,16 +13,11 @@ import {
   MonitorPlay,
   Inbox,
   RotateCcw,
-  Sparkles,
-  Zap,
-  ShieldCheck,
   Clock,
-  Keyboard,
   Download,
   Link2,
   ListTree,
   CheckCircle2,
-  AlertCircle,
   Star,
   StarOff,
   ArrowDownAz,
@@ -36,6 +31,7 @@ import {
   Share2,
   Lock,
   Info,
+  Eye,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -48,7 +44,6 @@ import { WatchDialog } from "@/components/watch-dialog";
 import { ResultsToolbar } from "@/components/results-toolbar";
 import { ResultSummaryCard } from "@/components/result-summary-card";
 import { HistoryPanel } from "@/components/history-panel";
-import { ShortcutsHelp } from "@/components/shortcuts-help";
 import { DownloadProgressDialog } from "@/components/download-progress-dialog";
 import { InsightsDialog } from "@/components/insights-dialog";
 import { SettingsDrawer } from "@/components/settings-drawer";
@@ -60,7 +55,6 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { useKeyboardShortcuts, type ShortcutBinding } from "@/hooks/use-keyboard-shortcuts";
 import { useSettings } from "@/hooks/use-settings";
 import { toast } from "sonner";
 import type { ExtractResult, VideoSource, MediaType } from "@/lib/types";
@@ -68,9 +62,9 @@ import { QUALITY_ORDER } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const TRUST_BADGES = [
-  { icon: Zap, label: "Fast extraction", color: "text-amber-500 dark:text-amber-400", bg: "bg-amber-500/10 dark:bg-amber-400/10", ring: "ring-amber-500/20" },
-  { icon: ShieldCheck, label: "Cloudflare-aware", color: "text-sky-500 dark:text-sky-400", bg: "bg-sky-500/10 dark:bg-sky-400/10", ring: "ring-sky-500/20" },
-  { icon: Clock, label: "Inline preview", color: "text-violet-500 dark:text-violet-400", bg: "bg-violet-500/10 dark:bg-violet-400/10", ring: "ring-violet-500/20" },
+  { icon: Clock, label: "Fast extraction", color: "text-emerald-500 dark:text-emerald-400", bg: "bg-emerald-500/10 dark:bg-emerald-400/10", ring: "ring-emerald-500/20" },
+  { icon: Lock, label: "Cloudflare-aware", color: "text-emerald-500 dark:text-emerald-400", bg: "bg-emerald-500/10 dark:bg-emerald-400/10", ring: "ring-emerald-500/20" },
+  { icon: Eye, label: "Inline preview", color: "text-emerald-500 dark:text-emerald-400", bg: "bg-emerald-500/10 dark:bg-emerald-400/10", ring: "ring-emerald-500/20" },
   { icon: Download, label: "Progress tracking", color: "text-emerald-500 dark:text-emerald-400", bg: "bg-emerald-500/10 dark:bg-emerald-400/10", ring: "ring-emerald-500/20" },
 ];
 
@@ -87,7 +81,7 @@ const EXAMPLES = [
   { label: "MP4 direct", url: "https://www.w3schools.com/html/mov_bbb.mp4" },
 ];
 
-/** Quality ranking — higher = better. */
+/** Quality ranking - higher = better. */
 function qualityRank(q?: string): number {
   if (!q) return 999;
   const idx = QUALITY_ORDER.indexOf(q.toLowerCase());
@@ -389,7 +383,7 @@ export default function Home() {
 
   const openWatch = (s: VideoSource) => {
     // iframe sources are HTML pages (e.g. DoodStream clones with captcha).
-    // They can't be played in our video player — open in a new tab instead.
+    // They can't be played in our video player - open in a new tab instead.
     if (s.type === "iframe") {
       if (typeof window !== "undefined") {
         window.open(s.url, "_blank", "noopener,noreferrer");
@@ -404,7 +398,7 @@ export default function Home() {
   };
 
   const openDownload = (s: VideoSource) => {
-    // iframe sources: open in a new tab — we can't proxy a captcha-protected
+    // iframe sources: open in a new tab - we can't proxy a captcha-protected
     // HTML page through the download stream.
     if (s.type === "iframe") {
       if (typeof window !== "undefined") {
@@ -434,7 +428,7 @@ export default function Home() {
   // Auto-focus on mount & read URL search params for PWA shortcut support.
   useEffect(() => {
     inputRef.current?.focus();
-    // Wire ?url= query param — enables PWA shortcuts and shareable links.
+    // Wire ?url= query param - enables PWA shortcuts and shareable links.
     try {
       const params = new URLSearchParams(window.location.search);
       const urlParam = params.get("url");
@@ -447,26 +441,6 @@ export default function Home() {
       }
     } catch { /* no URL params or invalid */ }
   }, [runExtract]);
-
-  // Track Alt key to show keyboard number overlays on source cards.
-  const [altHeld, setAltHeld] = useState(false);
-  useEffect(() => {
-    const onDown = (e: KeyboardEvent) => {
-      if (e.key === "Alt") setAltHeld(true);
-    };
-    const onUp = (e: KeyboardEvent) => {
-      if (e.key === "Alt") setAltHeld(false);
-    };
-    const onBlur = () => setAltHeld(false);
-    window.addEventListener("keydown", onDown);
-    window.addEventListener("keyup", onUp);
-    window.addEventListener("blur", onBlur);
-    return () => {
-      window.removeEventListener("keydown", onDown);
-      window.removeEventListener("keyup", onUp);
-      window.removeEventListener("blur", onBlur);
-    };
-  }, []);
 
   // Fetch stats on mount.
   useEffect(() => {
@@ -566,7 +540,7 @@ export default function Home() {
   }, [url]);
   const urlValid = useMemo(() => url.trim() && looksLikeUrl(url.trim()), [url]);
 
-  // URL security indicator — HTTPS vs HTTP
+  // URL security indicator - HTTPS vs HTTP
   const urlProtocol = useMemo(() => {
     try {
       if (!url.trim()) return null;
@@ -575,7 +549,7 @@ export default function Home() {
     } catch { return null; }
   }, [url]);
 
-  // Share URL — generates a shareable link that auto-fetches
+  // Share URL - generates a shareable link that auto-fetches
   const shareUrl = useMemo(() => {
     if (!urlValid || !url.trim()) return "";
     return `${window.location.origin}?url=${encodeURIComponent(url.trim())}`;
@@ -636,80 +610,16 @@ export default function Home() {
     }
   }, [result, url]);
 
-  // Keyboard shortcuts.
-  const shortcutBindings = useMemo<ShortcutBinding[]>(
-    () => {
-      const base: ShortcutBinding[] = [
-        { key: "/", handler: focusInput, allowInInput: false },
-        { key: "k", mod: true, handler: focusInput, allowInInput: false },
-        { key: "escape", handler: () => reset(), allowInInput: true },
-        {
-          key: "enter",
-          mod: true,
-          handler: () => {
-            if (url.trim()) runExtract(url);
-          },
-          allowInInput: true,
-        },
-      ];
-      if (hasResults && result) {
-        const sorted = sortByQuality(result.sources);
-        for (let n = 1; n <= Math.min(9, sorted.length); n++) {
-          const idx = n - 1;
-          const src = sorted[idx];
-          base.push({
-            key: String(n),
-            handler: () => openWatch(src),
-            allowInInput: false,
-          });
-        }
-        base.push({
-          key: "d",
-          handler: () => openDownload(sorted[0]),
-          allowInInput: false,
-        });
-        // Export shortcut — press 'e' to export results as JSON
-        base.push({
-          key: "e",
-          handler: () => exportResults("json"),
-          allowInInput: false,
-        });
-        // Share shortcut — press 's' to copy share link
-        base.push({
-          key: "s",
-          handler: copyShareUrl,
-          allowInInput: false,
-        });
-      }
-      return base;
-    },
-    [focusInput, reset, runExtract, url, hasResults, result, exportResults, copyShareUrl]
-  );
-  const shortcutLabels = [
-    "Focus the URL input",
-    "Focus the URL input",
-    "Clear results",
-    "Fetch the URL",
-  ];
-  if (hasResults && result) {
-    const n = Math.min(9, sortByQuality(result.sources).length);
-    for (let i = 1; i <= n; i++) shortcutLabels.push(`Open source #${i}`);
-    shortcutLabels.push("Download best source");
-    shortcutLabels.push("Export results as JSON");
-    shortcutLabels.push("Copy share link");
-  }
-  useKeyboardShortcuts(shortcutBindings);
-
   return (
     <div className="relative flex min-h-screen flex-col noise-overlay">
-      {/* Decorative background — multi-layer composition */}
+      {/* Decorative background - multi-layer composition */}
       <div aria-hidden className="pointer-events-none fixed inset-0 -z-10 hero-gradient" />
       {/* Grid pattern */}
       <div
         aria-hidden
         className="pointer-events-none fixed inset-0 -z-10 [background-image:linear-gradient(oklch(0.5_0.02_162/0.03)_1px,transparent_1px),linear-gradient(90deg,oklch(0.5_0.02_162/0.03)_1px,transparent_1px)] [background-size:42px_42px] [mask-image:radial-gradient(ellipse_at_top,black,transparent_70%)]"
       />
-      {/* Floating orbs — animated gradient blobs */}
+      {/* Floating orbs - animated gradient blobs */}
       <div aria-hidden className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
         <div className="animate-orb-1 absolute left-[15%] bottom-[20%] h-[300px] w-[300px] rounded-full bg-primary/5 blur-3xl dark:bg-primary/3" />
         <div className="animate-orb-2 absolute right-[20%] top-[60%] h-[250px] w-[250px] rounded-full bg-primary/4 blur-3xl dark:bg-primary/2" />
@@ -734,12 +644,11 @@ export default function Home() {
               <Clapperboard className="h-4 w-4" />
             </span>
             <span className="text-base font-bold tracking-tight">Reel</span>
-            <span className="hidden text-[11px] font-medium uppercase tracking-wide text-muted-foreground/70 sm:inline">
+            <span className="hidden text-[11px] font-medium text-muted-foreground/70 sm:inline">
               · fetch &amp; download
             </span>
           </button>
           <div className="flex items-center gap-1">
-            <ShortcutsHelp bindings={shortcutBindings} labels={shortcutLabels} />
             <Button
               variant="ghost"
               size="icon"
@@ -772,7 +681,7 @@ export default function Home() {
 
       {/* Main */}
       <main className="flex flex-1 flex-col">
-        <div className="mx-auto w-full max-w-3xl px-4 py-10 sm:px-6 sm:py-14">
+        <div className="mx-auto w-full max-w-3xl px-4 py-12 sm:px-6 sm:py-16">
 
           {/* Hero */}
           <section className="animate-fade-up flex flex-col items-center text-center">
@@ -783,10 +692,10 @@ export default function Home() {
               </span>
             </h1>
             <p className="mt-3 max-w-md text-pretty text-sm font-medium text-muted-foreground sm:text-base">
-              Paste a URL — watch, copy, or download.
+              Paste a URL · watch, copy, or download.
             </p>
 
-            {/* Search bar — drag-drop zone */}
+            {/* Search bar - drag-drop zone */}
             <form
               onSubmit={onSubmit}
               className="relative mt-7 w-full"
@@ -805,10 +714,10 @@ export default function Home() {
                 </div>
               )}
               <div className={`group relative flex w-full items-center transition-shadow ${isDragging ? "ring-2 ring-primary/50" : ""}`}>
-                {/* URL host favicon + security badge — left side */}
+                {/* URL host favicon + security badge - left side */}
                 {urlHost && urlValid && (
                   <div className="absolute left-2 flex items-center gap-1">
-                    {/* Security badge — HTTPS/HTTP indicator */}
+                    {/* Security badge - HTTPS/HTTP indicator */}
                     {urlProtocol === "https" && (
                       <TooltipProvider delayDuration={300}>
                         <Tooltip>
@@ -817,7 +726,7 @@ export default function Home() {
                               <Lock className="h-2.5 w-2.5" />
                             </span>
                           </TooltipTrigger>
-                          <TooltipContent>HTTPS — secure connection</TooltipContent>
+                          <TooltipContent>HTTPS · secure connection</TooltipContent>
                         </Tooltip>
                       </TooltipProvider>
                     )}
@@ -825,11 +734,11 @@ export default function Home() {
                       <TooltipProvider delayDuration={300}>
                         <Tooltip>
                           <TooltipTrigger asChild>
-                            <span className="flex h-3.5 w-3.5 items-center justify-center rounded-sm bg-amber-500/15 text-amber-600 dark:text-amber-400">
-                              <AlertCircle className="h-2.5 w-2.5" />
+                            <span className="flex h-3.5 w-3.5 items-center justify-center rounded-sm bg-destructive/15 text-destructive">
+                              <Info className="h-2.5 w-2.5" />
                             </span>
                           </TooltipTrigger>
-                          <TooltipContent>HTTP — unencrypted connection</TooltipContent>
+                          <TooltipContent>HTTP · unencrypted connection</TooltipContent>
                         </Tooltip>
                       </TooltipProvider>
                     )}
@@ -863,7 +772,7 @@ export default function Home() {
                     {urlValid ? (
                       <Check className="h-3 w-3 text-primary/70" />
                     ) : (
-                      <AlertCircle className="h-3 w-3 text-muted-foreground/40" />
+                      <Info className="h-3 w-3 text-muted-foreground/40" />
                     )}
                   </div>
                 )}
@@ -977,8 +886,8 @@ export default function Home() {
                       HTTPS · {urlHost}
                     </span>
                   ) : (
-                    <span className="flex items-center gap-1 font-medium text-amber-600 dark:text-amber-400">
-                      <AlertCircle className="h-3 w-3" />
+                    <span className="flex items-center gap-1 font-medium text-destructive">
+                      <Info className="h-3 w-3" />
                       HTTP · may be blocked
                     </span>
                   )}
@@ -1002,7 +911,7 @@ export default function Home() {
                   </span>
                 </div>
               )}
-              {/* Batch hint — only when input empty & no results */}
+              {/* Batch hint - only when input empty & no results */}
               {!url && !hasResults && !loading && (
                 <p className="mt-2 text-center text-[10px] text-muted-foreground/60">
                   Paste multiple URLs for batch mode
@@ -1052,17 +961,6 @@ export default function Home() {
                       </span>
                     </>
                   )}
-                  <span className="hidden items-center gap-1.5 text-[10px] text-muted-foreground sm:flex">
-                    <Keyboard className="h-3 w-3 text-muted-foreground/70" />
-                    <kbd className="rounded border border-border bg-muted px-1 py-0 font-mono text-[9px] font-semibold text-foreground/70 shadow-sm">
-                      /
-                    </kbd>
-                    <span className="text-muted-foreground/80">focus</span>
-                    <kbd className="ml-1 rounded border border-border bg-muted px-1 py-0 font-mono text-[9px] font-semibold text-foreground/70 shadow-sm">
-                      ⌘↵
-                    </kbd>
-                    <span className="text-muted-foreground/80">fetch</span>
-                  </span>
                 </div>
               )}
             </form>
@@ -1072,8 +970,7 @@ export default function Home() {
               <div className="animate-fade-up mt-10 w-full rounded-xl border border-border/70 bg-card/80 p-5 shadow-md shadow-black/[0.03] backdrop-blur-sm dark:bg-card/50 dark:shadow-black/20">
                 <div className="flex items-center justify-center gap-2">
                   <span className="h-px flex-1 bg-gradient-to-r from-transparent via-border to-transparent" />
-                  <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
-                    <Sparkles className="h-3 w-3 text-primary/70" />
+                  <span className="flex items-center gap-1.5 text-[10px] font-bold text-muted-foreground">
                     Capabilities
                   </span>
                   <span className="h-px flex-1 bg-gradient-to-r from-transparent via-border to-transparent" />
@@ -1102,7 +999,7 @@ export default function Home() {
                     <span
                       key={p.label}
                       title={p.hint}
-                      className="group/pill flex items-center gap-1 rounded-md border border-border bg-card px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-muted-foreground shadow-sm transition-all hover:border-primary/50 hover:bg-primary/8 hover:text-primary hover:shadow-md hover:shadow-primary/10"
+                      className="group/pill flex items-center gap-1 rounded-md border border-border bg-card px-2.5 py-1 text-[10px] font-bold text-muted-foreground shadow-sm transition-all hover:border-primary/50 hover:bg-primary/8 hover:text-primary hover:shadow-md hover:shadow-primary/10"
                     >
                       <p.icon className="h-3 w-3 text-primary/70 transition-transform group-hover/pill:scale-110" />
                       {p.label}
@@ -1138,7 +1035,7 @@ export default function Home() {
             {/* Batch status strip */}
             {batch && batch.length >= 2 && (
               <div className="mb-3 rounded-lg border border-border/60 bg-card/50 p-3 backdrop-blur-sm shadow-sm">
-                <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/80">
+                <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground/80">
                   <ListTree className="h-3.5 w-3.5 text-primary" />
                   Batch progress · {batch.length} URLs
                 </div>
@@ -1159,7 +1056,7 @@ export default function Home() {
                         <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-primary" />
                       )}
                       {e.status === "error" && (
-                        <AlertCircle className="h-3.5 w-3.5 shrink-0 text-destructive" />
+                        <Info className="h-3.5 w-3.5 shrink-0 text-destructive" />
                       )}
                       <span className="min-w-0 flex-1 truncate font-medium text-foreground/90">
                         {e.host}
@@ -1244,7 +1141,6 @@ export default function Home() {
                 </div>
                 {/* Helpful tips */}
                 <div className="mt-5 flex items-center gap-2 text-[11px] text-muted-foreground/60">
-                  <Sparkles className="h-3 w-3 text-primary/40 animate-float" />
                   <span>Direct video URLs (.mp4, .m3u8) work best.</span>
                 </div>
               </div>
@@ -1262,18 +1158,7 @@ export default function Home() {
               />
             )}
 
-            {/* Keyboard hint when results present */}
-            {!loading && hasResults && result.sources.length > 1 && settings.showKeyHints && (
-              <div className="mt-3 flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-[10px] text-muted-foreground/70">
-                <Keyboard className="h-3 w-3" />
-                <span>
-                  Hold <kbd className="rounded border border-border bg-muted px-1 py-px font-mono text-[9px] font-bold text-foreground/70">Alt</kbd> for numbers ·
-                  <kbd className="rounded border border-border bg-muted px-1 py-px font-mono text-[9px] font-bold text-foreground/70">1</kbd>–<kbd className="rounded border border-border bg-muted px-1 py-px font-mono text-[9px] font-bold text-foreground/70">9</kbd> watch ·
-                  <kbd className="rounded border border-border bg-muted px-1 py-px font-mono text-[9px] font-bold text-foreground/70">d</kbd> download
-                </span>
-              </div>
-            )}
-
+            {/* Results toolbar with filter pills */}
             {!loading && hasResults && (
               <ResultsToolbar
                 sources={displaySources}
@@ -1308,11 +1193,9 @@ export default function Home() {
                             s.url === bestUrl &&
                             result.sources.length > 1
                           }
-                          showKeyHint={settings.showKeyHints}
                           isFavorite={favorites.has(s.pageUrl || s.url)}
                           onToggleFavorite={() => toggleFavorite(s.pageUrl || s.url)}
                           cardIdx={i}
-                          showNumberOverlay={altHeld}
                         />
                       ))
                     )}

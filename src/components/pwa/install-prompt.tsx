@@ -7,7 +7,7 @@ import { toast } from "sonner";
  * InstallPrompt
  *
  * Listens for the browser's `beforeinstallprompt` event, captures it,
- * and surfaces a Sonner toast with an "Install" action — but only after
+ * and surfaces a Sonner toast with an "Install" action - but only after
  * the user's second visit (i.e. they have opened the app before, tracked
  * via localStorage). Dismissing the toast sets a session flag so it
  * doesn't reappear within the same session.
@@ -49,7 +49,7 @@ export default function InstallPrompt() {
 
     toast("Install Reel for offline access", {
       description:
-        "Add Reel to your home screen — fetch & download videos even when you're offline.",
+        "Add Reel to your home screen - fetch & download videos even when you're offline.",
       action: {
         label: "Install",
         onClick: () => void triggerInstall(),
