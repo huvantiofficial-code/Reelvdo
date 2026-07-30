@@ -9,6 +9,7 @@ import {
   Info,
   Pause,
   Play,
+  RotateCcw,
 } from "lucide-react";
 import {
   Dialog,
@@ -102,8 +103,23 @@ export function DownloadProgressDialog({
   });
   const abortRef = useRef<AbortController | null>(null);
   const pauseRef = useRef(false);
-  // Buffer pending chunks while paused so progress freezes cleanly.
-  const pendingRef = useRef<number>(0);
+  // Track the byte offset for resume. When the download is paused or fails,
+  // we can re-fetch with `Range: bytes={received}-` to continue from here.
+  const receivedRef = useRef(0);
+  // Track the writable stream (File System Access API) so we can resume
+  // writing to the same file after a pause/reconnect.
+  const writableRef = useRef<{ write: (data: Uint8Array | Blob) => Promise<void>; close: () => Promise<void> } | null>(null);
+  // Track the file handle so we can re-open the writable on resume.
+  const fileHandleRef = useRef<{ createWritable: () => Promise<{ write: (data: Uint8Array | Blob) => Promise<void>; close: () => Promise<void> }> } | null>(null);
+  // Track whether we're using the File System Access API (vs Blob fallback).
+  const useFSApiRef = useRef(false);
+  // For Blob fallback: accumulate chunks.
+  const chunksRef = useRef<Uint8Array[]>([]);
+  // Track the effective source URL (after refresh) so resume re-fetches
+  // the same URL with a Range header.
+  const effectiveUrlRef = useRef<string | null>(null);
+  // Track the page URL for referer.
+  const pageUrlRef = useRef<string | undefined>(undefined);
 
   const reset = useCallback(() => {
     setState({
@@ -119,8 +135,78 @@ export function DownloadProgressDialog({
     });
     abortRef.current = null;
     pauseRef.current = false;
-    pendingRef.current = 0;
+    receivedRef.current = 0;
+    writableRef.current = null;
+    fileHandleRef.current = null;
+    useFSApiRef.current = false;
+    chunksRef.current = [];
+    effectiveUrlRef.current = null;
+    pageUrlRef.current = undefined;
   }, []);
+
+  /** Core download loop. Fetches the URL (with optional Range header for
+   *  resume) and streams chunks to the writable (FS API) or chunks array
+   *  (Blob fallback). Returns when the stream ends, or throws on error.
+   *  Respects pauseRef — when paused, it stops reading and returns, leaving
+   *  the writable open for resume. */
+  const downloadLoop = async (
+    fetchUrl: string,
+    controller: AbortController,
+    rangeFrom?: number
+  ): Promise<"done" | "paused"> => {
+    const headers: Record<string, string> = {};
+    if (rangeFrom && rangeFrom > 0) {
+      headers["range"] = `bytes=${rangeFrom}-`;
+    }
+    const res = await fetch(fetchUrl, {
+      signal: controller.signal,
+      redirect: "follow",
+      headers,
+    });
+    if (!res.ok && res.status !== 206) {
+      throw new Error(`Server returned ${res.status}`);
+    }
+
+    // If resuming (206 Partial Content), the Content-Length is the REMAINING
+    // bytes, not the total. The total is already set from the initial fetch.
+    if (!(rangeFrom && rangeFrom > 0 && res.status === 206)) {
+      const totalHeader = res.headers.get("content-length");
+      const total = totalHeader ? parseInt(totalHeader, 10) : null;
+      if (total && total > 0) {
+        setState((s) => (s.total ? s : { ...s, total }));
+      }
+    }
+
+    if (!res.body) throw new Error("No response body");
+
+    const reader = res.body.getReader();
+    while (true) {
+      // Check pause BEFORE reading — if paused, release the reader and return.
+      // This stops consuming bandwidth immediately.
+      if (pauseRef.current) {
+        try { await reader.cancel(); } catch { /* ignore */ }
+        return "paused";
+      }
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        receivedRef.current += value.byteLength;
+        // Write to disk (FS API) or accumulate (Blob fallback).
+        if (useFSApiRef.current && writableRef.current) {
+          await writableRef.current.write(value);
+        } else {
+          chunksRef.current.push(value);
+        }
+        // Update UI with received bytes.
+        setState((s) => ({
+          ...s,
+          received: receivedRef.current,
+          phase: "downloading",
+        }));
+      }
+    }
+    return "done";
+  };
 
   // Start the download when a source arrives.
   useEffect(() => {
@@ -128,6 +214,10 @@ export function DownloadProgressDialog({
     const filename = basenameFor(source);
     const controller = new AbortController();
     abortRef.current = controller;
+    receivedRef.current = 0;
+    chunksRef.current = [];
+    effectiveUrlRef.current = null;
+    pageUrlRef.current = source.pageUrl;
 
     setState({
       phase: "fetching",
@@ -143,11 +233,7 @@ export function DownloadProgressDialog({
 
     // For HLS/DASH, the /api/stream response has no Content-Length (segments
     // are concatenated server-side). Pre-fetch the total via /api/size so we
-    // can show a real % bar. This races with the download start - whichever
-    // finishes first sets the total; if /api/size fails, we fall back to
-    // indeterminate (null total). When HEAD fails for some segments, /api/size
-    // also returns a duration-weighted `estimated` total which we use as a
-    // fallback so the bar still shows an approximate %.
+    // can show a real % bar.
     let sizeTotal: number | null = null;
     let sizeApprox = false;
     if (source.type === "m3u8" || source.type === "mpd") {
@@ -160,7 +246,6 @@ export function DownloadProgressDialog({
           if (data.ok) {
             const measured = typeof data.total === "number" && data.total > 0 ? data.total : null;
             const est = typeof data.estimated === "number" && data.estimated > 0 ? data.estimated : null;
-            // Prefer the measured total; fall back to the estimate.
             if (measured) {
               sizeTotal = measured;
               sizeApprox = false;
@@ -184,11 +269,7 @@ export function DownloadProgressDialog({
 
     (async () => {
       try {
-        // Refresh the source URL before downloading. This ensures we have a
-        // fresh, unused token - critical for sites like streamtape that
-        // rate-limit tokens (e.g., after the user watched the preview, the
-        // original token may be exhausted). For HLS/DASH we keep the original
-        // URL (refreshing the master playlist is expensive and rarely needed).
+        // Refresh the source URL before downloading.
         let effectiveSource: VideoSource = source;
         if (
           source.pageUrl &&
@@ -219,43 +300,14 @@ export function DownloadProgressDialog({
               }
             }
           } catch {
-            // Refresh failed (abort, network, etc.) - fall back to original.
+            // Refresh failed - fall back to original.
           }
         }
 
-        // HLS/DASH go through /api/stream (server concatenates segments);
-        // mp4/ts go through /api/proxy?download=1. Either way we read the
-        // response as a stream and report progress.
-        const url = downloadUrlFor(effectiveSource);
-        const res = await fetch(url, {
-          signal: controller.signal,
-          // Don't follow redirects automatically - curl-side already does.
-          redirect: "follow",
-        });
-        if (!res.ok) {
-          throw new Error(`Server returned ${res.status}`);
-        }
-        const totalHeader = res.headers.get("content-length");
-        const total = totalHeader ? parseInt(totalHeader, 10) : null;
+        const downloadUrl = downloadUrlFor(effectiveSource);
+        effectiveUrlRef.current = downloadUrl;
 
-        setState((s) => ({
-          ...s,
-          phase: "downloading",
-          // Prefer the server's Content-Length (always measured); fall back to
-          // /api/size result if available (HLS case) - which may be an estimate.
-          total: Number.isFinite(total) && total ? total : (sizeTotal ?? null),
-          approx: Number.isFinite(total) && total ? false : sizeApprox,
-        }));
-
-        if (!res.body) {
-          // No streaming - just bail to a regular download.
-          throw new Error("No response body; use direct download");
-        }
-
-        // Use the File System Access API when available (Chrome/Edge).
-        // This streams directly to disk without storing the file in memory,
-        // avoiding the 50-60MB crash that happens when storing chunks in RAM.
-        // The writable stream is piped from the fetch response stream.
+        // Try File System Access API first (Chrome/Edge).
         type FileSystemFileHandleLike = {
           createWritable: () => Promise<{
             write: (data: Uint8Array | Blob) => Promise<void>;
@@ -265,105 +317,60 @@ export function DownloadProgressDialog({
         type ShowSaveFilePickerFn = (opts: {
           suggestedName?: string;
         }) => Promise<FileSystemFileHandleLike>;
-
         const _window = window as typeof window & {
           showSaveFilePicker?: ShowSaveFilePickerFn;
         };
 
         if (typeof _window.showSaveFilePicker === "function") {
-          // File System Access API is available — stream directly to disk.
           try {
             const handle = await _window.showSaveFilePicker({
               suggestedName: filename,
             });
-            const writable = await handle.createWritable();
-            const reader = res.body.getReader();
-            let received = 0;
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              if (value) {
-                await writable.write(value);
-                received += value.byteLength;
-                if (pauseRef.current) {
-                  pendingRef.current += value.byteLength;
-                } else {
-                  const flush = pendingRef.current;
-                  pendingRef.current = 0;
-                  setState((s) => ({
-                    ...s,
-                    received: s.received + value.byteLength + flush,
-                  }));
-                }
-              }
-            }
-            if (pendingRef.current > 0) {
-              const flush = pendingRef.current;
-              pendingRef.current = 0;
-              setState((s) => ({ ...s, received: s.received + flush }));
-            }
-            await writable.close();
-            setState((s) => ({
-              ...s,
-              phase: "done",
-              finishedAt: Date.now(),
-              blobUrl: null, // No blob — file was saved directly to disk
-            }));
-            toast.success("Download complete");
-            return;
+            fileHandleRef.current = handle;
+            writableRef.current = await handle.createWritable();
+            useFSApiRef.current = true;
           } catch (e) {
-            // User cancelled the save dialog or FS API failed.
             if ((e as Error).name === "AbortError") {
               setState((s) => ({ ...s, phase: "aborted", finishedAt: Date.now() }));
               return;
             }
-            // Fall through to the in-memory blob approach below.
+            // Fall through to Blob fallback.
           }
         }
 
-        // Fallback: stream into memory (Blob). This works in Firefox/Safari
-        // but may fail for very large files (>200MB) due to memory limits.
-        const reader = res.body.getReader();
-        const chunks: Uint8Array[] = [];
-        let received = 0;
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (value) {
-            chunks.push(value);
-            received += value.byteLength;
-            // If paused, defer the state update so the bar visibly freezes.
-            if (pauseRef.current) {
-              pendingRef.current += value.byteLength;
-            } else {
-              const flush = pendingRef.current;
-              pendingRef.current = 0;
-              setState((s) => ({
-                ...s,
-                received: s.received + value.byteLength + flush,
-              }));
-            }
-          }
-        }
-        // Flush any pending bytes.
-        if (pendingRef.current > 0) {
-          const flush = pendingRef.current;
-          pendingRef.current = 0;
-          setState((s) => ({ ...s, received: s.received + flush }));
+        // Run the download loop.
+        const result = await downloadLoop(downloadUrl, controller);
+        if (result === "paused") {
+          // Download was paused — wait for resume.
+          setState((s) => ({ ...s, phase: "downloading" }));
+          return;
         }
 
-        // Assemble the blob.
-        const blob = new Blob(chunks as BlobPart[], {
-          type: res.headers.get("content-type") || "application/octet-stream",
-        });
-        const blobUrl = URL.createObjectURL(blob);
-        setState((s) => ({
-          ...s,
-          phase: "done",
-          finishedAt: Date.now(),
-          blobUrl,
-        }));
-        toast.success("Download ready");
+        // Download complete.
+        if (useFSApiRef.current && writableRef.current) {
+          await writableRef.current.close();
+          writableRef.current = null;
+        }
+        if (!useFSApiRef.current) {
+          const blob = new Blob(chunksRef.current as BlobPart[], {
+            type: "application/octet-stream",
+          });
+          const blobUrl = URL.createObjectURL(blob);
+          setState((s) => ({
+            ...s,
+            phase: "done",
+            finishedAt: Date.now(),
+            blobUrl,
+          }));
+        } else {
+          setState((s) => ({
+            ...s,
+            phase: "done",
+            finishedAt: Date.now(),
+            blobUrl: null,
+          }));
+        }
+        toast.success("Download complete");
       } catch (e) {
         if ((e as Error).name === "AbortError") {
           setState((s) => ({ ...s, phase: "aborted", finishedAt: Date.now() }));
@@ -380,7 +387,6 @@ export function DownloadProgressDialog({
     })();
 
     return () => {
-      // Cleanup any in-flight controller when dialog closes.
       try {
         controller.abort();
       } catch {
@@ -400,12 +406,71 @@ export function DownloadProgressDialog({
     if (abortRef.current) {
       abortRef.current.abort();
     }
+    // Close the writable if open.
+    if (writableRef.current) {
+      try { writableRef.current.close(); } catch { /* ignore */ }
+      writableRef.current = null;
+    }
   };
 
-  const togglePause = () => {
-    pauseRef.current = !pauseRef.current;
-    // Force a re-render to flip the icon.
+  const togglePause = async () => {
+    const wasPaused = pauseRef.current;
+    pauseRef.current = !wasPaused;
+    // Force a re-render to flip the icon immediately.
     setState((s) => ({ ...s }));
+
+    if (wasPaused) {
+      // Resuming — re-fetch with Range header to continue from receivedRef.
+      // The previous downloadLoop returned "paused" and left the writable open.
+      // We need to re-run the download loop with the Range header.
+      if (effectiveUrlRef.current && abortRef.current) {
+        try {
+          const result = await downloadLoop(
+            effectiveUrlRef.current,
+            abortRef.current,
+            receivedRef.current
+          );
+          if (result === "paused") {
+            // Paused again — wait for next resume.
+            return;
+          }
+          // Download complete.
+          if (useFSApiRef.current && writableRef.current) {
+            await writableRef.current.close();
+            writableRef.current = null;
+          }
+          if (!useFSApiRef.current) {
+            const blob = new Blob(chunksRef.current as BlobPart[], {
+              type: "application/octet-stream",
+            });
+            const blobUrl = URL.createObjectURL(blob);
+            setState((s) => ({
+              ...s,
+              phase: "done",
+              finishedAt: Date.now(),
+              blobUrl,
+            }));
+          } else {
+            setState((s) => ({
+              ...s,
+              phase: "done",
+              finishedAt: Date.now(),
+              blobUrl: null,
+            }));
+          }
+          toast.success("Download complete");
+        } catch (e) {
+          if ((e as Error).name === "AbortError") return;
+          setState((s) => ({
+            ...s,
+            phase: "error",
+            finishedAt: Date.now(),
+            error: e instanceof Error ? e.message : "Resume failed",
+          }));
+          toast.error("Resume failed");
+        }
+      }
+    }
   };
 
   const isPaused = pauseRef.current && state.phase === "downloading";
@@ -557,11 +622,18 @@ export function DownloadProgressDialog({
               <Info className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
               <div className="min-w-0">
                 <p className="text-xs font-medium text-destructive">
-                  Could not download
+                  {receivedRef.current > 0
+                    ? `Failed at ${formatBytes(receivedRef.current)}`
+                    : "Could not download"}
                 </p>
                 <p className="mt-0.5 break-words text-[11px] text-muted-foreground">
                   {state.error}
                 </p>
+                {receivedRef.current > 0 && (
+                  <p className="mt-1 text-[11px] text-primary">
+                    Click resume to continue from where it stopped.
+                  </p>
+                )}
               </div>
             </div>
           )}
@@ -569,7 +641,9 @@ export function DownloadProgressDialog({
           {/* Aborted hint */}
           {state.phase === "aborted" && (
             <p className="text-xs text-muted-foreground">
-              Download cancelled. You can close this dialog or retry.
+              {receivedRef.current > 0
+                ? `Cancelled at ${formatBytes(receivedRef.current)}. Click resume to continue.`
+                : "Download cancelled."}
             </p>
           )}
 
@@ -633,17 +707,86 @@ export function DownloadProgressDialog({
           )}
 
           {(state.phase === "error" || state.phase === "aborted") && (
-            <Button
-              size="sm"
-              variant="outline"
-              asChild
-              className="gap-1.5"
-            >
-              <a href={downloadUrlFor(source)} download>
-                <Download className="h-3.5 w-3.5" />
-                Direct download
-              </a>
-            </Button>
+            <>
+              {receivedRef.current > 0 && effectiveUrlRef.current && (
+                <Button
+                  size="sm"
+                  variant="default"
+                  className="gap-1.5"
+                  onClick={async () => {
+                    // Resume from where we left off.
+                    const controller = new AbortController();
+                    abortRef.current = controller;
+                    pauseRef.current = false;
+                    setState((s) => ({
+                      ...s,
+                      phase: "downloading",
+                      error: null,
+                      finishedAt: null,
+                    }));
+                    try {
+                      // Re-open writable if using FS API.
+                      if (useFSApiRef.current && fileHandleRef.current && !writableRef.current) {
+                        writableRef.current = await fileHandleRef.current.createWritable();
+                      }
+                      const result = await downloadLoop(
+                        effectiveUrlRef.current!,
+                        controller,
+                        receivedRef.current
+                      );
+                      if (result === "done") {
+                        if (useFSApiRef.current && writableRef.current) {
+                          await writableRef.current.close();
+                          writableRef.current = null;
+                        }
+                        if (!useFSApiRef.current) {
+                          const blob = new Blob(chunksRef.current as BlobPart[], {
+                            type: "application/octet-stream",
+                          });
+                          const blobUrl = URL.createObjectURL(blob);
+                          setState((s) => ({
+                            ...s,
+                            phase: "done",
+                            finishedAt: Date.now(),
+                            blobUrl,
+                          }));
+                        } else {
+                          setState((s) => ({
+                            ...s,
+                            phase: "done",
+                            finishedAt: Date.now(),
+                            blobUrl: null,
+                          }));
+                        }
+                        toast.success("Download complete");
+                      }
+                    } catch (e) {
+                      setState((s) => ({
+                        ...s,
+                        phase: "error",
+                        finishedAt: Date.now(),
+                        error: e instanceof Error ? e.message : "Retry failed",
+                      }));
+                      toast.error("Retry failed");
+                    }
+                  }}
+                >
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  Resume from {formatBytes(receivedRef.current)}
+                </Button>
+              )}
+              <Button
+                size="sm"
+                variant="outline"
+                asChild
+                className="gap-1.5"
+              >
+                <a href={downloadUrlFor(source)} download>
+                  <Download className="h-3.5 w-3.5" />
+                  Direct download
+                </a>
+              </Button>
+            </>
           )}
 
           <Button

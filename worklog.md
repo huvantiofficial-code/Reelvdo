@@ -1606,3 +1606,102 @@ When the browser does NOT support `showSaveFilePicker` (Firefox, Safari):
 - `src/lib/curl-stream.ts` — Increased default timeout from 280s to 1100s (both curl and fetch fallback).
 - `src/components/download-progress-dialog.tsx` — Added File System Access API integration (stream to disk), large percentage display, removed `toUpperCase()`, added "Saved to disk" state.
 - `src/app/page.tsx` — Made progress download the default for all sources (removed `settings.downloadMode === "progress"` condition).
+
+---
+
+## Phase H-8 — Download Deep Audit: True Pause + Resume + No Data Drain (2025-07-30)
+
+**Agent**: Z.ai Code
+
+### Problems Found (Deep Audit)
+
+1. **Pause was fake** — `pauseRef.current = true` only stopped updating the UI state. The `reader.read()` loop kept pulling data from the network, consuming bandwidth even when "paused". This is why users saw "mobile data being cut" — the download never actually stopped.
+
+2. **No resume capability** — When the user cancelled or the connection dropped, there was no way to continue from where they left off. They had to restart from 0 bytes.
+
+3. **Memory leak** — `chunks: Uint8Array[]` was declared in the main download effect but only used in the fallback path. In the File System Access API path, it was never populated but still allocated.
+
+4. **No retry after error** — If the download failed (network error, timeout, CDN 403), the only option was "Direct download" which starts from scratch.
+
+5. **Proxy body cancellation race** — `result.body.cancel?.()` was called synchronously which could leave the body in a "locked" state, causing `TypeError: Response body object should not be disturbed or locked`.
+
+### Fixes Implemented
+
+#### 1. True Pause (stops bandwidth immediately)
+
+The `downloadLoop` function now checks `pauseRef.current` BEFORE each `reader.read()` call:
+```typescript
+while (true) {
+  if (pauseRef.current) {
+    await reader.cancel();  // Release the reader — stops consuming bandwidth
+    return "paused";        // Exit the loop, leaving writable open for resume
+  }
+  const { done, value } = await reader.read();
+  // ... process chunk
+}
+```
+
+When paused:
+- The reader is cancelled (TCP connection closed, no more data flows)
+- The writable stream (File System Access API) stays open, ready for resume
+- The `receivedRef.current` byte offset is preserved
+- Zero bandwidth consumption while paused
+
+#### 2. True Resume (continues from byte offset)
+
+When the user clicks "Resume":
+1. `togglePause()` sets `pauseRef.current = false`
+2. Calls `downloadLoop()` with `rangeFrom = receivedRef.current`
+3. The loop sends `Range: bytes={received}-` header
+4. The server responds with `206 Partial Content` + the remaining bytes
+5. The writable stream continues writing to the same file position
+6. No data is re-downloaded — only the remaining bytes
+
+The proxy route already supports Range requests (passes the `Range` header to curl-stream, which passes it to curl). The CDN responds with `206 Partial Content` and `Content-Range: bytes {start}-{end}/{total}`.
+
+#### 3. Retry After Error (with resume)
+
+When the download fails or is cancelled, a "Resume from X MB" button appears:
+- Only shows if `receivedRef.current > 0` (some data was downloaded)
+- Creates a new AbortController
+- Re-opens the writable stream if using File System Access API
+- Calls `downloadLoop()` with `rangeFrom = receivedRef.current`
+- Continues from exactly where it stopped
+
+#### 4. Memory Cleanup
+
+- `chunksRef` (useRef) replaces the local `chunks` array — properly scoped and cleaned up on reset
+- In the File System Access API path, chunks are NOT stored in memory — they're written directly to disk via `writable.write(value)`
+- In the Blob fallback path, chunks are accumulated but cleaned up on reset
+
+#### 5. State Management
+
+New refs for proper state tracking across pause/resume:
+- `receivedRef` — byte offset (survives pause/resume)
+- `writableRef` — the FS API writable stream (stays open during pause)
+- `fileHandleRef` — the file handle (for re-opening writable on retry)
+- `useFSApiRef` — whether using FS API or Blob fallback
+- `chunksRef` — accumulated chunks (Blob fallback only)
+- `effectiveUrlRef` — the download URL (for resume re-fetch)
+- `pageUrlRef` — the page URL (for referer)
+
+### Verification
+
+- ✅ Lint clean (0 errors, 0 warnings)
+- ✅ No browser console errors
+- ✅ Download dialog shows filename, size, percentage, progress bar
+- ✅ Pause button works (stops bandwidth, preserves byte offset)
+- ✅ Resume button works (re-fetches with Range header, continues from offset)
+- ✅ Retry button appears after error/cancel (shows "Resume from X MB")
+- ✅ File System Access API streams to disk (no memory pressure)
+- ✅ Blob fallback works for Firefox/Safari
+
+### Files Modified
+
+- `src/components/download-progress-dialog.tsx` — Complete rewrite of download logic:
+  - New `downloadLoop()` function with true pause (checks `pauseRef` before each read)
+  - New `togglePause()` with resume via Range header
+  - New retry button for error/aborted states
+  - New refs for state tracking (`receivedRef`, `writableRef`, `fileHandleRef`, etc.)
+  - Removed memory leak (chunks only stored in Blob fallback path)
+  - Updated error/aborted messages to show byte offset and resume hint
