@@ -2148,3 +2148,113 @@ network interruption on their 1 Mbps connection). With the new architecture:
 3. Add download speed limiter / concurrency control for users on metered
    connections.
 4. Persist download state to localStorage so a page refresh can resume.
+
+---
+
+## Phase H-12 — Vercel Deployment Prep + GitHub Push to Reelvdo.git (2025-07-30)
+
+### Project Status
+
+Stable. The previous phase (H-11) implemented the segment-by-segment HLS
+download architecture that fixed the user's "Failed at 15.3 MB / network
+error" on their 1 Mbps connection. The app was verified end-to-end with
+agent-browser (extraction, HLS download, pause/resume, completion).
+
+This phase's goal: **prepare the project for clean Vercel deployment and
+push all files to the new GitHub repo `Reelvdo.git`**.
+
+### Goal / Completed Modifications
+
+1. **Capped `/api/proxy` `maxDuration` from 1200s → 300s.** The previous
+   value (20 minutes) exceeded even Vercel Enterprise's 900s maximum and
+   would have caused deployment issues. 300s is the Pro-plan ceiling and is
+   silently capped to 60s on Hobby (still functional for smaller files).
+   The HLS segment-by-segment downloader is unaffected — it uses short
+   ~1–3s requests that never approach any timeout.
+
+2. **Created `vercel.json`** with:
+   - Framework = nextjs (auto-detected, explicit for safety)
+   - `installCommand: bun install`, `buildCommand: next build`
+   - `regions: ["iad1"]` (single region to avoid cross-region DB duplication)
+   - Per-route `functions[].maxDuration` caps matching the route-file exports
+     (60s for metadata routes, 300s for stream/proxy)
+   - CORS headers for `/api/(.*)` so cross-origin browser requests work
+
+3. **Updated `README.md`** — expanded the "How it works on Vercel" section
+   to document:
+   - The segment-by-segment HLS download architecture (slow-connection friendly)
+   - The `vercel.json` function-timeout strategy and plan-tier behavior
+   - That the legacy `/api/stream` is now a fallback for direct MP4 downloads
+
+4. **Switched the git remote** from `Video-Downloader-App.git` →
+   `Reelvdo.git` (with the user-provided PAT for authentication).
+
+5. **Pushed all 119 tracked files** to `https://github.com/huvantiofficial-code/Reelvdo.git`
+   on the `main` branch. HEAD = `6b32062`. Local and remote are fully synced.
+
+6. **Security scan passed**: confirmed the GitHub PAT, `.env`, `db/*.db`,
+   and `dev.log` are NOT tracked in any commit (all properly gitignored).
+
+7. **Created scheduled cron job** (job_id 298322, `webDevReview` kind,
+   every 15 minutes / fixed_rate 900s, tz Asia/Dhaka) to autonomously
+   review, QA, and continue development on a recurring basis.
+
+### Verification Results
+
+- **Lint**: 0 errors / 0 warnings (`bun run lint`).
+- **Dev server**: HTTP 200 on `/` in 128ms; no errors in dev.log.
+- **agent-browser E2E**:
+  - Page renders fully: header, hero, URL form, capabilities chips, stats
+    (61 fetches / 588 sources / 34 hosts), recent fetches, sticky footer.
+  - Core flow: pasted `https://test-streams.mux.dev/pts_shift/master.m3u8`,
+    clicked Fetch → **8 sources extracted in 1.7s**, "Watch best" + "Download"
+    buttons present, 720p quality detected. `POST /api/extract` 200,
+    `POST /api/history` 200.
+  - No console/runtime errors during the interaction.
+- **Git push**: `* [new branch] main -> main`; `git rev-parse HEAD` ==
+  `git rev-parse origin/main` == `6b32062` (synced). 119 tracked files.
+  All key files confirmed present on the remote HEAD (`vercel.json`,
+  `README.md`, `package.json`, `prisma/schema.prisma`, `src/app/page.tsx`,
+  `src/app/api/hls-segment/route.ts`, `src/app/api/hls-segments/route.ts`,
+  `src/lib/db.ts`).
+
+### Files Modified / Created
+- **NEW** `vercel.json` — Vercel deployment config (framework, regions,
+  per-route maxDuration, CORS headers).
+- `src/app/api/proxy/route.ts` — `maxDuration` 1200 → 300 (Vercel-compatible).
+- `README.md` — expanded Vercel deployment docs (segment-by-segment HLS,
+  function timeouts).
+
+### Vercel Deployment Instructions (for the user)
+
+1. Go to https://vercel.com/new
+2. Import the repo `huvantiofficial-code/Reelvdo`
+3. Vercel auto-detects Next.js + the `vercel.json` config. No settings
+   changes needed — leave Build/Install commands as auto-detected.
+4. **No environment variables are required** to deploy. The app uses an
+   ephemeral SQLite DB at `/tmp/reel.db` on Vercel automatically (tables
+   auto-created on first request).
+5. (Optional) For **persistent history across cold starts**, set
+   `DATABASE_URL` to a hosted DB (e.g. Turso libSQL:
+   `libsql://<db>.turso.io?authToken=<token>`).
+6. Click Deploy. The build runs `next build` with `prisma generate` via
+   the `postinstall` hook.
+
+### Unresolved Issues / Risks
+- **Vercel Hobby plan 60s cap**: On the free Hobby tier, `/api/stream`
+  and `/api/proxy` are capped at 60s. HLS downloads are unaffected
+  (segment-by-segment). Direct MP4 downloads of very large files
+  (>~60 MB on a slow connection) may time out on Hobby — upgrade to Pro
+  for 300s. This is a fundamental serverless limitation, not a bug.
+- **Cloudflare-protected hosts**: Vercel serverless has no `curl` binary,
+  so the fetcher falls back to native `fetch`. Some CF-protected hosts
+  may block Vercel's IPs. The vast majority of sites work fine.
+- **Ephemeral history on Vercel**: Without a hosted `DATABASE_URL`, the
+  fetch history resets on cold starts and isn't shared across instances.
+  Set `DATABASE_URL` (Turso) for persistence.
+
+### Priority Recommendations for Next Phase
+1. Add Turso libSQL adapter for persistent history on Vercel (one env var).
+2. Add a "Download all qualities" batch action for multi-source results.
+3. Show per-segment progress indicator for large HLS videos.
+4. Persist in-progress downloads to localStorage so a page refresh can resume.
