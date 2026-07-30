@@ -1112,15 +1112,116 @@ function extractPornhubNetwork(html: string, finalUrl: string): VideoSource[] | 
 
 /* ------------------------------------------------------------------ */
 /* Site: Eporner (eporner.com) — free porn tube.                       */
-/*   The page embeds a <script type="application/ld+json"> JSON-LD      */
-/*   blob with "contentUrl" pointing to a direct MP4 on                */
-/*   gvideo.eporner.com/{videoId}/{videoId}.mp4 (CORS-open, range).    */
-/*   Also has "embedUrl" and "thumbnailUrl".                            */
+/*   The page embeds a JSON-LD <script> with contentUrl, BUT that URL   */
+/*   (gvideo.eporner.com/{vid}/{vid}.mp4) returns 403 — it's just a     */
+/*   placeholder for schema.org. The REAL video URLs are fetched via    */
+/*   an XHR API: GET /xhr/video/{vid}?hash={transformed_hash}&domain=   */
+/*   www.eporner.com&embed=true&supportedFormats=mp4&_={timestamp}      */
+/*   The response JSON has sources.mp4.{quality}.{src,labelShort} with   */
+/*   real CDN URLs like vid-s6-n50-fr-cdn.eporner.com/v6/{token}/       */
+/*   {expiry}_{ip}_{num}/{fileId}-{quality}.mp4 (CORS-open, range).     */
+/*   The hash is transformed: split into 4×8-hex-char chunks, each      */
+/*   parseInt(chunk,16).toString(36), concatenated. This is done by     */
+/*   the vjs851.js player script.                                       */
 /* ------------------------------------------------------------------ */
-function extractEporner(html: string, finalUrl: string): VideoSource[] | null {
+
+/** Transform a 32-char hex hash into the base-36 representation the API
+ *  expects. Splits into 4×8-hex-char chunks, converts each to base-36. */
+function transformEpornerHash(hash: string): string {
+  if (!hash || hash.length !== 32) return hash;
+  try {
+    const p1 = parseInt(hash.substring(0, 8), 16).toString(36);
+    const p2 = parseInt(hash.substring(8, 16), 16).toString(36);
+    const p3 = parseInt(hash.substring(16, 24), 16).toString(36);
+    const p4 = parseInt(hash.substring(24, 32), 16).toString(36);
+    return p1 + p2 + p3 + p4;
+  } catch {
+    return hash;
+  }
+}
+
+async function extractEporner(html: string, finalUrl: string): Promise<VideoSource[] | null> {
   const sources: VideoSource[] = [];
   const seen = new Set<string>();
-  // 1. Parse JSON-LD <script> block (schema.org VideoObject)
+
+  // 1. Extract vid + hash from the EP.video.player config in the page JS.
+  //    Format: EP.video.player.vid = 'fIog4Qk47j4';
+  //            EP.video.player.hash = '97da5f0bf63aa3bd6eddefa60af01a95';
+  const vidM = html.match(/EP\.video\.player\.vid\s*=\s*['"]([^'"]+)['"]/);
+  const hashM = html.match(/EP\.video\.player\.hash\s*=\s*['"]([a-f0-9]{32})['"]/i);
+  const vid = vidM?.[1];
+  const hash = hashM?.[1];
+
+  if (vid && hash) {
+    const transformedHash = transformEpornerHash(hash);
+    const params = new URLSearchParams({
+      hash: transformedHash,
+      domain: "www.eporner.com",
+      pixelRatio: "1",
+      playerWidth: "852",
+      playerHeight: "480",
+      fallback: "false",
+      embed: "true",
+      supportedFormats: "mp4",
+      _: Date.now().toString(),
+    });
+    const apiUrl = `https://www.eporner.com/xhr/video/${vid}?${params}`;
+    try {
+      const r = await curlFetch(apiUrl, {
+        timeoutMs: 15000,
+        headers: {
+          accept: "application/json",
+          referer: finalUrl,
+          "x-requested-with": "XMLHttpRequest",
+        },
+      });
+      if (r.ok) {
+        try {
+          const data = JSON.parse(r.text) as {
+            available?: boolean;
+            sources?: {
+              mp4?: Record<string, {
+                src?: string;
+                labelShort?: string;
+                default?: boolean;
+              }>;
+            };
+          };
+          if (data.available !== false && data.sources?.mp4) {
+            // Sort qualities descending (480p, 360p, 240p).
+            const qualities = Object.keys(data.sources.mp4)
+              .filter((k) => k !== "auto" && data.sources!.mp4![k]?.src)
+              .sort((a, b) => {
+                const na = parseInt(a, 10) || 0;
+                const nb = parseInt(b, 10) || 0;
+                return nb - na;
+              });
+            for (const q of qualities) {
+              const entry = data.sources.mp4[q];
+              if (!entry?.src || !/^https?:/.test(entry.src)) continue;
+              if (seen.has(entry.src)) continue;
+              seen.add(entry.src);
+              const label = entry.labelShort || q;
+              sources.push({
+                url: entry.src,
+                type: "mp4",
+                ext: "mp4",
+                label: `MP4 · ${label}`,
+                quality: label,
+                pageUrl: finalUrl,
+              });
+            }
+          }
+        } catch {
+          // JSON parse failed — fall through
+        }
+      }
+    } catch {
+      // API fetch failed — fall through
+    }
+  }
+
+  // 2. Parse JSON-LD <script> block for thumbnail + fallback contentUrl.
   const ldRe = /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/i;
   const ldM = html.match(ldRe);
   if (ldM) {
@@ -1130,22 +1231,24 @@ function extractEporner(html: string, finalUrl: string): VideoSource[] | null {
         embedUrl?: string;
         thumbnailUrl?: string | string[];
         name?: string;
-        encodingFormat?: string;
         width?: string | number;
         height?: string | number;
       };
-      if (obj.contentUrl && /^https?:/.test(obj.contentUrl) && !seen.has(obj.contentUrl)) {
+      // Only use contentUrl as a LAST resort (it 403s, but shows the URL
+      // to the user in case the API approach fails).
+      if (!sources.length && obj.contentUrl && /^https?:/.test(obj.contentUrl) && !seen.has(obj.contentUrl)) {
         seen.add(obj.contentUrl);
         const q = obj.height ? `${obj.height}p` : undefined;
         sources.push({
           url: obj.contentUrl,
           type: "mp4",
           ext: "mp4",
-          label: `MP4${q ? ` · ${q}` : ""}`,
+          label: `MP4${q ? ` · ${q}` : ""} · may require referer`,
           quality: q,
           pageUrl: finalUrl,
         });
       }
+      // Always add thumbnail as image source.
       const thumb = Array.isArray(obj.thumbnailUrl) ? obj.thumbnailUrl[0] : obj.thumbnailUrl;
       if (thumb && /^https?:/.test(thumb) && !seen.has(thumb)) {
         seen.add(thumb);
@@ -1162,22 +1265,7 @@ function extractEporner(html: string, finalUrl: string): VideoSource[] | null {
       // fall through
     }
   }
-  // 2. Fallback: scan for gvideo.eporner.com MP4 URLs
-  if (!sources.length) {
-    const re = /https?:\/\/[^"'\s<>()\\]*?\.?eporner\.com\/[^"'\s<>()\\]+?\.mp4[^"'\s<>()\\]*/gi;
-    while ((m = re.exec(html)) !== null) {
-      if (seen.has(m[0])) continue;
-      seen.add(m[0]);
-      sources.push({
-        url: m[0],
-        type: "mp4",
-        ext: "mp4",
-        label: "MP4",
-        quality: "MP4",
-        pageUrl: finalUrl,
-      });
-    }
-  }
+
   return sources.length ? sources : null;
 }
 
@@ -1937,9 +2025,10 @@ export async function trySiteExtractor(
       // flashvars_{id} JSON blob with "mediaDefinitions" array.
       sources = extractPornhubNetwork(html, finalUrl);
     } else if (host.includes("eporner")) {
-      // Eporner (eporner.com) — JSON-LD <script> with contentUrl pointing to
-      // a direct MP4 on gvideo.eporner.com (CORS-open, range support).
-      sources = extractEporner(html, finalUrl);
+      // Eporner (eporner.com) — XHR API at /xhr/video/{vid}?hash={transformed}
+      // returns real CDN MP4 URLs (480p/360p/240p). The hash is extracted
+      // from EP.video.player.hash in the page JS and transformed base-16→36.
+      sources = await extractEporner(html, finalUrl);
     } else if (host.includes("spankbang")) {
       // SpankBang — Cloudflare "Just a moment..." interstitial on all pages.
       // Cannot extract server-side; surface as iframe.
@@ -2087,9 +2176,9 @@ export async function trySiteExtractor(
     if (!sources && /[^"'\s<>()\\]+?\.xhcdn\.com\/[^"'\s<>()\\]*?\.m3u8/i.test(html)) {
       sources = extractXhamster(html, finalUrl);
     }
-    // Content-based fallback: detect eporner pages by their JSON-LD VideoObject.
-    if (!sources && /<script[^>]*type=["']application\/ld\+json["'][^>]*>[\s\S]*?contentUrl/i.test(html)) {
-      sources = extractEporner(html, finalUrl);
+    // Content-based fallback: detect eporner pages by their EP.video.player config.
+    if (!sources && /EP\.video\.player\.(vid|hash)\s*=/.test(html)) {
+      sources = await extractEporner(html, finalUrl);
     }
   } catch {
     return null;

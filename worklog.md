@@ -964,3 +964,56 @@ The "Error 153 - Video player configuration error" seen in YouTube embeds within
 ### Stage Summary
 
 The social platform extractors now return **playable embeddable iframes** that render inline in the watch dialog via `<iframe>`. Users see a "Watch" button (not "Open page") for YouTube, Facebook, Instagram, Telegram, VK, and X.com. The watch dialog loads the official embed player from each platform, which plays the video using the platform's own player (decoding signatures, handling DRM, etc.). For captcha-protected sites (VOE, Upstream, Send.cm, Vidmoly, StreamSB, KrakenFiles, UpFiles, SpankBang, TrafficStars), the old "Open page" behavior is preserved.
+
+---
+
+## Phase H-3 — Eporner Real Video URL Extraction (2025-07-30)
+
+**Agent**: Z.ai Code
+**Scope**: Fix the eporner extractor — the JSON-LD `contentUrl` (gvideo.eporner.com/{vid}/{vid}.mp4) returns 403 Forbidden. The real video URLs are fetched via an XHR API with a transformed hash.
+
+### Root Cause
+
+The old `extractEporner` relied on the JSON-LD `contentUrl` field (`https://gvideo.eporner.com/{vid}/{vid}.mp4`). Testing revealed this URL returns **HTTP 403** — it's a placeholder for schema.org, NOT a playable URL. The real video URLs are fetched dynamically by the `vjs851.js` player script via an XHR API call.
+
+### Investigation
+
+1. Probed the eporner video page HTML — found `EP.video.player.vid = 'fIog4Qk47j4'` and `EP.video.player.hash = '97da5f0bf63aa3bd6eddefa60af01a95'` in inline JS.
+2. Downloaded `https://static-sg-cdn.eporner.com/vjs/vjs851.js` (777KB) and searched for the URL builder.
+3. Found the XHR endpoint: `/xhr/video/{vid}` with query params `hash`, `domain`, `pixelRatio`, `playerWidth`, `playerHeight`, `fallback`, `embed`, `supportedFormats`, `_` (timestamp).
+4. Discovered the hash is **transformed**: split into 4×8-hex-char chunks, each `parseInt(chunk, 16).toString(36)`, concatenated. This is the `function o(s,a,t)` in vjs851.js.
+5. Tested the API: `GET /xhr/video/fIog4Qk47j4?hash={transformed}&domain=www.eporner.com&embed=true&supportedFormats=mp4&_={ts}` returns JSON with `sources.mp4.{quality}.{src,labelShort}` containing real CDN URLs like `https://vid-s6-n50-fr-cdn.eporner.com/v6/{token}/{expiry}_{ip}_{num}/{fileId}-{quality}.mp4`.
+6. Verified the CDN URL returns HTTP 200 with `content-type: video/mp4`, `content-length: 1025919928` (~1GB), `access-control-allow-origin: *` (CORS-open), and range support.
+
+### Fix
+
+Rewrote `extractEporner` as an async function (`src/lib/site-extractors.ts`):
+
+1. **Extract vid + hash** from the page HTML via regex: `EP\.video\.player\.vid\s*=\s*['"]([^'"]+)['"]` and `EP\.video\.player\.hash\s*=\s*['"]([a-f0-9]{32})['"]`.
+2. **Transform the hash** via `transformEpornerHash()`: 4×8-hex-char chunks → `parseInt(chunk, 16).toString(36)` → concatenated.
+3. **Call the XHR API**: `GET https://www.eporner.com/xhr/video/{vid}?hash={transformed}&domain=www.eporner.com&pixelRatio=1&playerWidth=852&playerHeight=480&fallback=false&embed=true&supportedFormats=mp4&_={timestamp}` with headers `accept: application/json`, `referer: {finalUrl}`, `x-requested-with: XMLHttpRequest`.
+4. **Parse the JSON response**: extract `sources.mp4.{quality}.src` for each quality (480p, 360p, 240p), sorted descending. Each becomes a `VideoSource` with `type: "mp4"`, `quality: "{labelShort}"`, `label: "MP4 · {labelShort}"`.
+5. **Fallback**: if the API fails, use the JSON-LD `contentUrl` (with a "may require referer" warning) + thumbnail.
+
+Also updated:
+- The dispatch (line 2031): `sources = await extractEporner(html, finalUrl)` (now async).
+- The content-based fallback (line 2180): changed the detection regex from JSON-LD `contentUrl` to `EP\.video\.player\.(vid|hash)\s*=` (more accurate).
+
+### Verification (agent-browser end-to-end)
+
+- ✅ API returns 3 real MP4 sources (480p, 360p, 240p) + thumbnail poster.
+- ✅ CDN URLs return HTTP 200 with `content-type: video/mp4`, ~1GB content-length, CORS `*`, range support.
+- ✅ Watch dialog opens with the 480p source — video element loads with play/pause/volume/fullscreen/time-scrubber controls.
+- ✅ **Video plays!** Clicked play → button changed to "pause" → time scrubber advanced to 3.85 seconds.
+- ✅ Download dialog opens → status "DOWNLOADING" → 15.5 MB / 978.4 MB at 1.2 MB/s (~13m 30s remaining). Download is actually working.
+- ✅ Lint clean (0 errors, 0 warnings).
+- ✅ No browser console errors.
+- ✅ All 12 tested platforms still pass.
+
+### Files Modified
+
+- `src/lib/site-extractors.ts` — Rewrote `extractEporner` as async function with `transformEpornerHash()` helper. Added XHR API call to `/xhr/video/{vid}` with transformed hash. Updated dispatch + content-based fallback to use `await`.
+
+### Stage Summary
+
+Eporner extraction is now **fully working** — returns 3 real playable MP4 sources (480p/360p/240p) from the XHR API. The video plays inline in the watch dialog and downloads with real progress tracking. The key insight was reverse-engineering the `vjs851.js` player script to find the XHR endpoint and hash transformation algorithm.
