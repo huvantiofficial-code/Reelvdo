@@ -2180,6 +2180,103 @@ function extractUkdevilz(html: string, finalUrl: string): VideoSource[] | null {
 }
 
 /* ------------------------------------------------------------------ */
+/* Site: vids.st (vids.st) — video hosting with HLS streaming.          */
+/*   Watch URL pattern: /v/{id}   Embed URL: /e/{id}                    */
+/*   The page embeds a playerConfig JSON with:                          */
+/*     - videoUrl: https://cdn.vids.st/video{id}/master.m3u8            */
+/*     - thumbnail: https://cdn.vids.st/video{id}/thumb{id}.jpg         */
+/*   The CDN (cdn.vids.st) is IP/geo-restricted — it returns HTTP 404   */
+/*   for our server IP but works fine for the user's browser. So we     */
+/*   return TWO sources:                                               */
+/*     1. PRIMARY: embeddable iframe → https://vids.st/e/{id}           */
+/*        The embed page is a self-contained ArtPlayer + hls.js player  */
+/*        that loads directly in the user's browser (no X-Frame-Options).*/
+/*        This is the most reliable way to preview the video.           */
+/*     2. FALLBACK: the raw HLS m3u8 URL marked as direct (not proxied).*/
+/*        hls.js in the browser fetches it directly; if the user's IP   */
+/*        is allowed, it plays.                                         */
+/* ------------------------------------------------------------------ */
+function extractVidsSt(html: string, finalUrl: string): VideoSource[] | null {
+  const sources: VideoSource[] = [];
+
+  // Extract video ID from URL: /v/{id} or /e/{id}
+  let videoId: string | null = null;
+  try {
+    const u = new URL(finalUrl);
+    const m = u.pathname.match(/^\/(?:v|e)\/(\d+)/i);
+    if (m) videoId = m[1];
+  } catch {
+    // ignore
+  }
+  // Fallback: extract from playerConfig in HTML
+  if (!videoId) {
+    const idM = html.match(/"videoId"\s*:\s*(\d+)/);
+    if (idM) videoId = idM[1];
+  }
+  if (!videoId) return null;
+
+  // Extract the m3u8 URL from playerConfig (watch page) or const url (embed page).
+  // Watch page: "videoUrl":"https://cdn.vids.st/video5524/master.m3u8"
+  // Embed page: const url = "https:\/\/cdn.vids.st\/video5524\/master.m3u8";
+  let m3u8Url: string | null = null;
+  const vuM = html.match(/"videoUrl"\s*:\s*"(https?:\\?\/\\?\/[^"]+\.m3u8[^"]*)"/);
+  if (vuM) {
+    m3u8Url = vuM[1].replace(/\\\//g, "/").replace(/\\u0026/gi, "&");
+  }
+  if (!m3u8Url) {
+    const cuM = html.match(/const\s+url\s*=\s*"(https?:\\?\/\\?\/[^"]+\.m3u8[^"]*)"/);
+    if (cuM) {
+      m3u8Url = cuM[1].replace(/\\\//g, "/").replace(/\\u0026/gi, "&");
+    }
+  }
+  // Construct from videoId if still not found (pattern is predictable)
+  if (!m3u8Url) {
+    m3u8Url = `https://cdn.vids.st/video${videoId}/master.m3u8`;
+  }
+
+  // Extract thumbnail
+  let thumb: string | null = null;
+  const thM = html.match(/"thumbnail"\s*:\s*"(https?:\\?\/\\?\/[^"]+thumb[^"]*)"/);
+  if (thM) {
+    thumb = thM[1].replace(/\\\//g, "/");
+  }
+  if (!thumb) {
+    const thM2 = html.match(/const\s+poster\s*=\s*"(https?:\\?\/\\?\/[^"]+thumb[^"]*)"/);
+    if (thM2) thumb = thM2[1].replace(/\\\//g, "/");
+  }
+
+  // 1. PRIMARY: embeddable iframe → https://vids.st/e/{id}
+  //    The embed page is a self-contained player that runs in the user's
+  //    browser, so the CDN sees the user's IP (which is allowed).
+  const embedUrl = `https://vids.st/e/${videoId}`;
+  sources.push({
+    url: embedUrl,
+    type: "iframe",
+    ext: "html",
+    label: "vids.st · play in app",
+    quality: "Watch",
+    embeddable: true,
+    pageUrl: finalUrl,
+  });
+
+  // 2. FALLBACK: raw HLS m3u8 URL (direct — not proxied through our server
+  //    because the CDN blocks our IP). The browser's hls.js fetches it
+  //    directly; works when the user's IP is allowed by the CDN.
+  if (m3u8Url) {
+    sources.push({
+      url: m3u8Url,
+      type: "m3u8",
+      ext: "m3u8",
+      label: "HLS · direct",
+      quality: "HLS",
+      pageUrl: finalUrl,
+    });
+  }
+
+  return sources.length ? sources : null;
+}
+
+/* ------------------------------------------------------------------ */
 /* Generic helper for captcha-protected hosts: returns a single iframe   */
 /* source pointing to the original URL so the user can open the page in  */
 /* their browser and solve the captcha (Cloudflare Turnstile, hCaptcha,  */
@@ -2340,6 +2437,12 @@ export async function trySiteExtractor(
       // tokens. The page also has a fake /videofile/{id}.mp4 placeholder
       // (returns 404) and related-video URLs — both must be skipped.
       sources = extractUkdevilz(html, finalUrl);
+    } else if (host.includes("vids.st") || host === "vids.st") {
+      // vids.st — HLS streaming site. The CDN (cdn.vids.st) is IP/geo-
+      // restricted and returns 404 for our server IP, so we return an
+      // embeddable iframe (https://vids.st/e/{id}) that the user's browser
+      // loads directly. Also returns the raw m3u8 as a direct fallback.
+      sources = extractVidsSt(html, finalUrl);
     } else if (host.includes("spankbang")) {
       // SpankBang — Cloudflare "Just a moment..." interstitial on all pages.
       // Cannot extract server-side; surface as iframe.

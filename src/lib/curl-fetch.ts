@@ -74,7 +74,7 @@ export async function curlFetchBuffer(
  */
 async function fetchFallback(
   url: string,
-  opts: { headers?: Record<string, string>; method?: string; body?: string; timeoutMs?: number; referer?: string } = {}
+  opts: { headers?: Record<string, string>; method?: string; body?: string; timeoutMs?: number; referer?: string; insecure?: boolean } = {}
 ): Promise<CurlResult> {
   const timeoutMs = opts.timeoutMs ?? 25000;
   let referer = opts.referer;
@@ -109,6 +109,22 @@ async function fetchFallback(
   // @ts-expect-error — Node's RequestInit.signal accepts AbortSignal.
   init.signal = controller.signal;
 
+  // Allow self-signed / incomplete cert chains when requested.
+  if (opts.insecure) {
+    try {
+      // @ts-expect-error — undici dispatcher (Node 18+)
+      (init as unknown as { dispatcher?: unknown }).dispatcher = new (await import("undici")).Agent({
+        connect: { rejectUnauthorized: false },
+      });
+    } catch {
+      try {
+        const https = await import("https");
+        // @ts-expect-error — Node classic fetch accepts agent
+        (init as unknown as { agent?: unknown }).agent = new https.Agent({ rejectUnauthorized: false });
+      } catch { /* ignore */ }
+    }
+  }
+
   try {
     const resp = await fetch(url, init);
     const text = method === "HEAD" ? "" : await resp.text();
@@ -131,7 +147,7 @@ async function fetchFallback(
  */
 export async function curlFetch(
   url: string,
-  opts: { headers?: Record<string, string>; method?: string; body?: string; timeoutMs?: number; referer?: string; maxRedirects?: number } = {}
+  opts: { headers?: Record<string, string>; method?: string; body?: string; timeoutMs?: number; referer?: string; maxRedirects?: number; insecure?: boolean } = {}
 ): Promise<CurlResult> {
   // When curl is unavailable (e.g. Vercel serverless), use the native fetch
   // fallback so extraction keeps working without the Cloudflare bypass.
@@ -168,6 +184,8 @@ export async function curlFetch(
     "--connect-timeout", "15",
     "-A", UA,
   ];
+  // Skip TLS verification for sites with incomplete cert chains (vids.st).
+  if (opts.insecure) args.push("--insecure");
   // Follow redirects by default, but allow caller to disable or limit.
   if (opts.maxRedirects === 0) {
     // Don't follow any redirects — return the 3xx response with Location header.

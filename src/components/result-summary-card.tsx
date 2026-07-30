@@ -50,6 +50,7 @@ const KNOWN_SITES: { match: string[]; label: string }[] = [
   { match: ["xozilla"], label: "xozilla" },
   { match: ["porndr"], label: "porndr" },
   { match: ["ukdevilz"], label: "ukdevilz" },
+  { match: ["vids.st"], label: "vids.st" },
   { match: ["spankbang"], label: "spankbang" },
   { match: ["txxx", "hdzog", "upornia", "tubepornclassic", "voyeurhit", "momvids", "shemalez"], label: "txxx-network" },
   { match: ["voe.sx", "voeunblk", "voeunblock", "voe-unblock"], label: "voe" },

@@ -18,6 +18,10 @@ export interface StreamOpts {
   /** Override the referer (defaults to the target's own origin). Pass the
    *  embedding page URL when a CDN requires hotlink-style referer auth. */
   referer?: string;
+  /** When true, skip TLS certificate verification (curl --insecure / Node
+   *  NODE_TLS_REJECT_UNAUTHORIZED=0). Needed for sites like vids.st whose
+   *  CDN serves an incomplete certificate chain (missing intermediate). */
+  insecure?: boolean;
 }
 
 function parseHeaders(block: Buffer): {
@@ -64,16 +68,36 @@ async function fetchStreamFallback(
   if (opts.headers) Object.assign(headers, opts.headers);
   if (opts.range) headers["range"] = opts.range;
 
+  // Allow self-signed / incomplete cert chains when the caller requests it.
+  // This is set per-request via the Agent override below.
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 1100000);
 
   try {
-    const resp = await fetch(url, {
+    const fetchOpts: RequestInit & { agent?: unknown } = {
       headers,
       redirect: "follow",
       // @ts-expect-error — Node's RequestInit.signal accepts AbortSignal.
       signal: controller.signal,
-    });
+    };
+    if (opts.insecure) {
+      // Disable TLS verification for this request only.
+      const https = await import("https");
+      const agent = new https.Agent({ rejectUnauthorized: false });
+      // @ts-expect-error — Node's fetch accepts a dispatcher/agent in some runtimes.
+      fetchOpts.agent = agent;
+      // Bun: set the env flag via a header hack is not possible; instead we
+      // rely on the dispatcher option. For Node, the agent override works.
+      try {
+        // @ts-expect-error — undici dispatcher
+        fetchOpts.dispatcher = new (await import("undici")).Agent({
+          connect: { rejectUnauthorized: false },
+        });
+      } catch {
+        // undici not available — keep the https agent (Node classic).
+      }
+    }
+    const resp = await fetch(url, fetchOpts);
     const h: Record<string, string> = {};
     resp.headers.forEach((v, k) => {
       h[k.toLowerCase()] = v;
@@ -115,6 +139,9 @@ function curlStreamViaCurl(
     "--dump-header", "-",
     "-o", "-",
   ];
+  // Skip TLS verification when the caller requests it (for sites with
+  // incomplete certificate chains like vids.st).
+  if (opts.insecure) args.push("--insecure");
 
   // Use an explicit referer override when provided (e.g. the embedding page
   // for CDNs with hotlink protection); otherwise default to the target origin.

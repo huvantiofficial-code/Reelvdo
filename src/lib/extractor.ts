@@ -71,7 +71,11 @@ export function resolveUrl(raw: string, base: string): string | null {
 async function fetchText(
   url: string
 ): Promise<{ text: string; finalUrl: string; status: number; contentType: string }> {
-  const r = await curlFetch(url);
+  // vids.st and its CDN (cdn.vids.st) serve an incomplete certificate
+  // chain (missing intermediate). Skip TLS verification so we can fetch
+  // the page HTML. The watch page is public; no sensitive data is exchanged.
+  const insecure = /vids\.st/.test(url);
+  const r = await curlFetch(url, insecure ? { insecure: true } : undefined);
   return { text: r.text, finalUrl: r.finalUrl, status: r.status, contentType: r.contentType };
 }
 
@@ -629,9 +633,26 @@ export async function extract(rawUrl: string): Promise<ExtractResult> {
   for (const s of deduped) {
     if (s.type === "m3u8") {
       const variants = await ExpandMasterM3u8(s.url);
-      // Preserve the originating page URL for token refresh on download.
-      if (s.pageUrl) for (const v of variants) if (!v.pageUrl) v.pageUrl = s.pageUrl;
-      expanded.push(...variants);
+      // When expansion fails (e.g. CDN returns 404 for our server IP, as
+      // happens with vids.st's cdn.vids.st), ExpandMasterM3u8 returns a
+      // single bare fallback {url, type, ext, isMaster} with NO label or
+      // quality. In that case, preserve the original source's label,
+      // quality, and pageUrl so the UI can still display it and downloads
+      // can still refresh the token.
+      if (variants.length === 1 && variants[0].url === s.url && !variants[0].label && !variants[0].quality && !variants[0].pageUrl) {
+        expanded.push({
+          ...s,
+          ...variants[0],
+          // Keep original label/quality/pageUrl if the fallback dropped them.
+          label: s.label || variants[0].label,
+          quality: s.quality || variants[0].quality,
+          pageUrl: s.pageUrl || variants[0].pageUrl,
+        });
+      } else {
+        // Preserve the originating page URL for token refresh on download.
+        if (s.pageUrl) for (const v of variants) if (!v.pageUrl) v.pageUrl = s.pageUrl;
+        expanded.push(...variants);
+      }
     } else {
       expanded.push(s);
     }
